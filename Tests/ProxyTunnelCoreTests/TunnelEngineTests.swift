@@ -410,17 +410,19 @@ final class TunnelEngineTests: XCTestCase {
         XCTAssertTrue(built.warnings.isEmpty, built.warnings.joined(separator: "; "))
 
         // And the NetworkExtension objects were actually configured, not just
-        // described.
+        // described. `includedRoutes`/`excludedRoutes` are optional in the Swift
+        // API even though the header does not mark them nullable, so they are
+        // unwrapped with a default rather than force-unwrapped.
         guard let ipv4 = built.settings.ipv4Settings else {
             return XCTFail("no IPv4 settings were produced")
         }
-        XCTAssertEqual(ipv4.includedRoutes.count, 1)
-        XCTAssertEqual(ipv4.excludedRoutes.count, 1)
+        XCTAssertEqual(ipv4.includedRoutes?.count ?? 0, 1)
+        XCTAssertEqual(ipv4.excludedRoutes?.count ?? 0, 1)
 
         guard let ipv6 = built.settings.ipv6Settings else {
             return XCTFail("no IPv6 settings were produced")
         }
-        XCTAssertEqual(ipv6.includedRoutes.count, 1)
+        XCTAssertEqual(ipv6.includedRoutes?.count ?? 0, 1)
 
         XCTAssertEqual(built.settings.dnsSettings?.servers, ["198.51.100.53"])
         XCTAssertEqual(built.settings.dnsSettings?.matchDomains, [""])
