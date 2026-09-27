@@ -91,7 +91,7 @@ public enum EntitlementInspector {
                 lines.append("Team: \(teamIdentifier.joined(separator: ", "))")
             }
             if let creationDate, let expirationDate {
-                lines.append("Validity: \(Self.dateFormatter.string(from: creationDate)) → \(Self.dateFormatter.string(from: expirationDate))")
+                lines.append("Validity: \(EntitlementInspector.dateFormatter.string(from: creationDate)) → \(EntitlementInspector.dateFormatter.string(from: expirationDate))")
             }
             if let provisionedDeviceCount {
                 lines.append("Provisioned devices: \(provisionedDeviceCount)")
@@ -151,7 +151,7 @@ public enum EntitlementInspector {
         }
     }
 
-    private static let dateFormatter: DateFormatter = {
+    static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"

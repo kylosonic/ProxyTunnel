@@ -483,7 +483,7 @@ final class HTTPConnectCodecTests: XCTestCase {
     func testFindsTheHeadTerminatorSoLeftoverBytesSurvive() throws {
         let raw = Data("HTTP/1.1 200 OK\r\n\r\nBODYDATA".utf8)
         let terminator = try XCTUnwrap(HTTPConnect.findHeadTerminator(in: raw))
-        XCTAssertEqual(String(decoding: raw[terminator...], as: UTF8.self), "BODYDATA")
+        XCTAssertEqual(String(decoding: Data(raw.suffix(from: terminator)), as: UTF8.self), "BODYDATA")
     }
 
     func testRequestRejectsAnAuthorityWithSpaces() {

@@ -267,9 +267,11 @@ public final class NWByteStream: DuplexByteStream {
         case .posix(let code):
             return "POSIX \(code.rawValue) (\(Self.posixName(code)))"
         case .dns(let code):
-            return "DNS \(code.rawValue)"
+            // DNSServiceErrorType is a plain Int32, not a RawRepresentable enum.
+            return "DNS error \(code)"
         case .tls(let code):
-            return "TLS \(code.rawValue) (\(Self.tlsName(code)))"
+            // OSStatus is likewise a plain Int32.
+            return "TLS handshake failed (OSStatus \(code): \(Self.tlsName(code)))"
         @unknown default:
             return "\(error)"
         }

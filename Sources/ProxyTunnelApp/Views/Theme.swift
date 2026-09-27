@@ -98,7 +98,7 @@ struct DetailRow: View {
     let value: String
     var monospaced: Bool = false
     var valueColor: Color = Theme.primaryText
-    var symbol: String?
+    var symbol: String? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -150,7 +150,7 @@ struct NoticeBanner: View {
     let level: Level
     let title: String
     let message: String?
-    var action: (title: String, handler: () -> Void)?
+    var action: (title: String, handler: () -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

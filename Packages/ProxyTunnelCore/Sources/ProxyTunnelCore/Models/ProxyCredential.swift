@@ -13,7 +13,7 @@ import Foundation
 ///
 /// `description` and `debugDescription` are overridden so that string
 /// interpolation can never leak the password.
-public struct ProxyCredential: Codable, Equatable, Sendable {
+public struct ProxyCredential: Codable, Equatable, Hashable, Sendable {
 
     public let username: String
     public let password: String

@@ -12,6 +12,11 @@ import Foundation
 /// then no TCP connection was ever proxied, whatever the status light says.
 public struct TunnelStatistics: Codable, Equatable, Sendable {
 
+    /// Explicit public initialiser: the synthesised member-wise one is internal,
+    /// which would make `TunnelStatistics()` unusable as a default argument in
+    /// the public initialisers of other types.
+    public init() {}
+
     public var startedAt: Date?
     public var stoppedAt: Date?
 

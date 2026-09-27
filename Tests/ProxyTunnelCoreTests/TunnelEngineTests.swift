@@ -377,8 +377,9 @@ final class TunnelEngineTests: XCTestCase {
         var packets: [Data] = []
         for offset in 0..<3 {
             packets.append(TestPackets.tcpPacket(
-                sourcePort: UInt16(40000 + offset),
                 destination: fakeDestination,
+                sourcePort: UInt16(40000 + offset),
+                destinationPort: 443,
                 sequence: 1000,
                 flags: [.syn],
                 options: TestPackets.synOptions
@@ -398,22 +399,30 @@ final class TunnelEngineTests: XCTestCase {
         let configuration = makeConfiguration()
         let built = TunnelNetworkSettingsFactory.make(configuration: configuration)
 
-        let ipv4 = try? XCTUnwrap(built.settings.ipv4Settings)
-        XCTAssertEqual(ipv4?.includedRoutes.count, 1)
-        XCTAssertEqual(ipv4?.includedRoutes.first?.destinationAddress, "0.0.0.0")
-        XCTAssertEqual(ipv4?.excludedRoutes.first?.destinationAddress, "127.0.0.1")
-        XCTAssertEqual(ipv4?.excludedRoutes.first?.destinationSubnetMask, "255.255.255.255")
+        XCTAssertEqual(built.ipv4IncludedRoutes, ["0.0.0.0/0"])
+        XCTAssertEqual(built.ipv4ExcludedRoutes, ["127.0.0.1/32"])
+        XCTAssertEqual(built.ipv6IncludedRoutes, ["::/0"])
+        XCTAssertEqual(built.dnsServers, ["198.51.100.53"])
+        XCTAssertEqual(built.mtu, TunnelNetworkDefaults.mtu)
+        XCTAssertEqual(built.ipv4Address, TunnelNetworkDefaults.ipv4Address)
+        XCTAssertEqual(built.ipv6Address, TunnelNetworkDefaults.ipv6Address)
+        XCTAssertEqual(built.tunnelRemoteAddress, "127.0.0.1")
+        XCTAssertTrue(built.warnings.isEmpty, built.warnings.joined(separator: "; "))
 
-        XCTAssertEqual(built.settings.ipv6Settings?.includedRoutes.first?.destinationAddress, "::")
+        // And the NetworkExtension objects were actually configured, not just
+        // described.
+        XCTAssertEqual(built.settings.ipv4Settings?.includedRoutes.count, 1)
+        XCTAssertEqual(built.settings.ipv4Settings?.excludedRoutes.count, 1)
+        XCTAssertEqual(built.settings.ipv6Settings?.includedRoutes.count, 1)
         XCTAssertEqual(built.settings.dnsSettings?.servers, ["198.51.100.53"])
         XCTAssertEqual(built.settings.dnsSettings?.matchDomains, [""])
         XCTAssertEqual(built.settings.mtu, NSNumber(value: TunnelNetworkDefaults.mtu))
-        XCTAssertEqual(built.tunnelRemoteAddress, "127.0.0.1")
     }
 
     func testIPv6CanBeTurnedOffAndSaysSo() {
         let built = TunnelNetworkSettingsFactory.make(configuration: makeConfiguration(allowIPv6: false))
         XCTAssertNil(built.settings.ipv6Settings)
+        XCTAssertNil(built.ipv6Address)
         XCTAssertTrue(built.warnings.contains { $0.contains("IPv6 is disabled") })
     }
 

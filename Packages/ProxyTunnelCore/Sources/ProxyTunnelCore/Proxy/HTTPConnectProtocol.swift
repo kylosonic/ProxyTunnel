@@ -208,7 +208,7 @@ public enum SimpleHTTP {
     public static func parse(_ data: Data) -> Response? {
         guard let terminator = HTTPConnect.findHeadTerminator(in: data) else { return nil }
         guard let response = try? HTTPConnect.parseResponseHead(data) else { return nil }
-        let body = data[terminator...]
-        return Response(statusCode: response.statusCode, headers: response.headers, body: Data(body))
+        let body = Data(data.suffix(from: terminator))
+        return Response(statusCode: response.statusCode, headers: response.headers, body: body)
     }
 }

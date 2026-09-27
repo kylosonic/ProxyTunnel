@@ -114,6 +114,11 @@ public enum DNSSettingsValidator {
         public let servers: [String]
         public let issues: [ValidationIssue]
 
+        public init(servers: [String], issues: [ValidationIssue]) {
+            self.servers = servers
+            self.issues = issues
+        }
+
         public var isValid: Bool { !issues.contains { $0.severity == .error } }
     }
 

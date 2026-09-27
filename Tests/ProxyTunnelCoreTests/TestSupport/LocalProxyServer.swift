@@ -413,8 +413,8 @@ final class LocalHTTPConnectServer {
                 return
             }
 
-            let head = String(decoding: accumulated[..<range.lowerBound], as: UTF8.self)
-            let leftover = Data(accumulated[range.upperBound...])
+            let head = String(decoding: Data(accumulated.prefix(upTo: range.lowerBound)), as: UTF8.self)
+            let leftover = Data(accumulated.suffix(from: range.upperBound))
             self.handle(head: head, leftover: leftover, connection: connection)
         }
     }

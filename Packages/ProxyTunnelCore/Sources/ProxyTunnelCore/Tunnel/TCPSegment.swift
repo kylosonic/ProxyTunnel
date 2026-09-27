@@ -167,7 +167,10 @@ public struct TCPSegment: Equatable, Sendable {
 
         let optionLength = headerLength - 20
         let options = optionLength > 0 ? try reader.readBytes(optionLength) : []
-        let payload = Data(data[data.startIndex + headerLength...])
+        // `dropFirst` rather than a partial-range subscript: `Data` declares an
+        // `Int` subscript that shadows the generic `RangeExpression` one, so
+        // `data[n...]` does not compile.
+        let payload = Data(data.dropFirst(headerLength))
 
         return TCPSegment(
             sourcePort: sourcePort,

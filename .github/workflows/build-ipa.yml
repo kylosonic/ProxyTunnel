@@ -137,24 +137,12 @@ jobs:
             -scheme "$SCHEME" \
             2>&1 | tee artifacts/logs/resolve-packages.txt
 
-      - name: Build the Network Extension target (unsigned)
-        run: |
-          set -euo pipefail
-          set -o pipefail
-          xcodebuild build \
-            -project ProxyTunnel.xcodeproj \
-            -scheme "$EXTENSION_SCHEME" \
-            -configuration "$BUILD_CONFIGURATION" \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            DEVELOPMENT_TEAM="" \
-            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
-            2>&1 | tee artifacts/logs/build-extension.txt
-
+      # The three build/test steps below deliberately do NOT stop each other.
+      # A failing app build would otherwise hide every error in the test target,
+      # and each macOS runner minute is expensive — one run should report
+      # everything it can.
       - name: Build the main app target including the extension (unsigned)
+        id: build_app
         run: |
           set -euo pipefail
           set -o pipefail
@@ -171,8 +159,28 @@ jobs:
             BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
             2>&1 | tee artifacts/logs/build-app.txt
 
+      - name: Build the Network Extension target standalone (unsigned)
+        id: build_extension
+        if: always()
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          xcodebuild build \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$EXTENSION_SCHEME" \
+            -configuration "$BUILD_CONFIGURATION" \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
+            2>&1 | tee artifacts/logs/build-extension.txt
+
       - name: Locate build products
         id: products
+        if: steps.build_app.outcome == 'success'
         run: |
           set -euo pipefail
           BUILT_DIR="build/DerivedData/Build/Products/${BUILD_CONFIGURATION}-iphoneos"
@@ -198,7 +206,7 @@ jobs:
 
       - name: Pick an available iOS simulator
         id: simulator
-        if: ${{ env.RUN_TESTS == 'true' }}
+        if: always() && env.RUN_TESTS == 'true'
         run: |
           set -euo pipefail
           cat > /tmp/pick_simulator.py <<'PY'
@@ -222,7 +230,8 @@ jobs:
           xcrun simctl list devices available | tee artifacts/logs/simulators.txt
 
       - name: Run the test suite
-        if: ${{ env.RUN_TESTS == 'true' }}
+        id: tests
+        if: always() && env.RUN_TESTS == 'true'
         run: |
           set -euo pipefail
           set -o pipefail
@@ -245,8 +254,38 @@ jobs:
             BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
             2>&1 | tee artifacts/logs/tests.txt
 
+      # Because the build and test steps above run with `if: always()` so that one
+      # run reports every error, their outcomes have to be turned back into a
+      # pass/fail for the whole job. `skipped` counts as fine (the test step is
+      # skipped when run_tests is false).
+      - name: Fail the run if any build or test step failed
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "build_app       = ${{ steps.build_app.outcome }}"
+          echo "build_extension = ${{ steps.build_extension.outcome }}"
+          echo "tests           = ${{ steps.tests.outcome }}"
+
+          failed=0
+          for outcome in \
+            "${{ steps.build_app.outcome }}" \
+            "${{ steps.build_extension.outcome }}" \
+            "${{ steps.tests.outcome }}"; do
+            case "$outcome" in
+              success|skipped) ;;
+              *) failed=1 ;;
+            esac
+          done
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "::error::At least one build or test step failed. The full xcodebuild output is in the ProxyTunnel-iOS-build-logs artifact."
+            exit 1
+          fi
+          echo "All build and test steps succeeded."
+
       - name: Package the unsigned IPA
         id: package
+        if: steps.build_app.outcome == 'success'
         run: |
           set -euo pipefail
           ./Scripts/make-ipa.sh "${{ steps.products.outputs.app_path }}" "$IPA_NAME" \

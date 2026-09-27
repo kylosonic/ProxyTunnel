@@ -361,7 +361,7 @@ private final class Runner {
         }
 
         let terminator = HTTPConnect.findHeadTerminator(in: buffer) ?? buffer.endIndex
-        let leftover = Data(buffer[terminator...])
+        let leftover = Data(buffer.suffix(from: terminator))
 
         finish(.success(ProxySession.Outcome(
             protocolType: endpoint.protocolType,
