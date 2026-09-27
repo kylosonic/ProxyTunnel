@@ -164,7 +164,10 @@ final class TunnelController: ObservableObject {
             managerSummary = describe(providerManager)
 
             // ---- 3. Start it ----------------------------------------------
-            providerManager.connection.startVPNTunnel()
+            // `startVPNTunnel()` is throwing: `NEVPNError` covers the cases where
+            // iOS refuses outright (no permission, configuration stale), while a
+            // tunnel that fails *after* starting reports through `NEVPNStatus`.
+            try providerManager.connection.startVPNTunnel()
             log.info("vpn", "startVPNTunnel() called")
             startStatusPolling()
 
@@ -278,9 +281,12 @@ final class TunnelController: ObservableObject {
         // Keep the tunnel alive across screen lock: a proxy tunnel is useless if
         // it drops whenever the phone sleeps.
         protocolConfiguration.disconnectOnSleep = false
-        // Do not send the tunnel's own traffic through a cellular APN proxy.
+        // Keep the tunnel's own transport off any APN proxy the carrier has
+        // configured, and let it reach the local network if the proxy is on it.
+        // `excludeAPNs` is deliberately not set: it is iOS 16.4+, its default is
+        // already `false`, and `enforceRoutes` covers the routing behaviour we
+        // actually depend on.
         protocolConfiguration.enforceRoutes = true
-        protocolConfiguration.excludeAPNs = false
         protocolConfiguration.excludeLocalNetworks = false
 
         providerManager.protocolConfiguration = protocolConfiguration

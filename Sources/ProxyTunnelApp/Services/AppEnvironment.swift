@@ -30,7 +30,7 @@ final class AppEnvironment: ObservableObject {
 
     /// Cached so the Diagnostics screen does not re-read the bundle on every
     /// render.
-    @Published private(set) var entitlementReport: EntitlementInspector.Report
+    @Published private(set) var entitlements: EntitlementInspector.Report
 
     init(
         secrets: SecretStoring = SecretStoreProvider.current,
@@ -40,22 +40,22 @@ final class AppEnvironment: ObservableObject {
         self.secrets = secrets
         self.settings = AppSettingsStore.load()
         self.profileStore = ProfileStore.makeDefault(secrets: secrets, log: log)
-        self.entitlementReport = EntitlementInspector.inspect()
-        self.tunnel = TunnelController(log: log, entitlements: entitlementReport)
+        self.entitlements = EntitlementInspector.inspect()
+        self.tunnel = TunnelController(log: log, entitlements: entitlements)
         self.mock = MockTunnelSession()
 
         log.info("app", "ProxyTunnel \(AppVersion.displayString) started")
         log.info("app", "bundle id: \(AppIdentifiers.mainAppBundleIdentifier)")
         log.info("app", "app group available: \(SharedContainer.isAvailable)")
-        log.info("app", "packet tunnel entitlement present: \(entitlementReport.extensionHasPacketTunnelEntitlement)")
-        if entitlementReport.entitlementDefinitelyMissing {
+        log.info("app", "packet tunnel entitlement present: \(entitlements.extensionHasPacketTunnelEntitlement)")
+        if entitlements.entitlementDefinitelyMissing {
             log.warning("app", "the tunnel extension lacks com.apple.developer.networking.networkextension; the VPN part of this app cannot run in this build")
         }
     }
 
     /// Called once from the root view's `.task`.
     func bootstrap() async {
-        entitlementReport = EntitlementInspector.inspect()
+        entitlements = EntitlementInspector.inspect()
         await tunnel.bootstrap()
         if settings.autoConnectOnLaunch, let profile = profileStore.selectedProfile,
            !settings.useMockMode {
@@ -64,8 +64,8 @@ final class AppEnvironment: ObservableObject {
     }
 
     func refreshEntitlements() {
-        entitlementReport = EntitlementInspector.inspect()
-        tunnel.updateEntitlementReport(entitlementReport)
+        entitlements = EntitlementInspector.inspect()
+        tunnel.updateEntitlementReport(entitlements)
     }
 
     // MARK: - Actions
