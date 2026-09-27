@@ -541,17 +541,29 @@ final class TunnelController: ObservableObject {
         log.error("vpn", "\(stage) failed: \(nsError.domain) \(nsError.code) — \(nsError.localizedDescription)")
 
         if nsError.domain == NEVPNErrorDomain {
+            // The numeric values come from Apple's shipped NEVPNManager.h:
+            //   1 ConfigurationInvalid
+            //   2 ConfigurationDisabled
+            //   3 ConnectionFailed
+            //   4 ConfigurationStale
+            //   5 ConfigurationReadWriteFailed
+            //   6 ConfigurationUnknown
+            // Apple's documentation publishes the case names but not the numbers,
+            // so they are spelled out here rather than relying on the Swift
+            // constant names — several of which are easy to mix up (4 and 5 in
+            // particular).
             switch nsError.code {
-            case NEVPNError.configurationInvalid.rawValue:
+            case 1:
                 return TunnelFailure(
                     kind: .vpnConfigurationFailed,
                     title: "iOS rejected the VPN configuration",
-                    message: "The configuration is not valid. The most common cause on a sideloaded build is that the packet tunnel extension does not have the Network Extension entitlement, so iOS will not accept a tunnel that points at it.",
-                    recoverySuggestion: "Open Diagnostics ▸ Signing & entitlements to see what was actually signed. A paid Apple Developer Program account is required to provision the Network Extensions capability.",
+                    message: "The configuration is not valid. On a sideloaded build the usual cause is that the packet tunnel extension does not have the Network Extension entitlement, so iOS will not accept a tunnel pointing at it.",
+                    recoverySuggestion: "Open Diagnostics ▸ Signing & entitlements to see what was actually signed. Provisioning the Network Extensions capability requires an Apple Developer Program membership.",
                     underlyingDescription: "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)",
                     isRetryable: false
                 )
-            case NEVPNError.configurationDisabled.rawValue:
+
+            case 2:
                 return TunnelFailure(
                     kind: .vpnConfigurationFailed,
                     title: "The VPN configuration is disabled",
@@ -560,41 +572,44 @@ final class TunnelController: ObservableObject {
                     underlyingDescription: "\(nsError.domain) \(nsError.code)",
                     isRetryable: true
                 )
-            case NEVPNError.configurationStale.rawValue:
+
+            case 3:
+                return TunnelFailure(
+                    kind: .tunnelFailed,
+                    title: "The tunnel failed to start",
+                    message: "iOS could not bring the tunnel up.",
+                    recoverySuggestion: "Check the log on the Diagnostics screen. If the extension started and then failed, its own log will say why.",
+                    underlyingDescription: "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)",
+                    isRetryable: true
+                )
+
+            case 4:
                 return TunnelFailure(
                     kind: .vpnConfigurationFailed,
                     title: "The VPN configuration was out of date",
-                    message: "The configuration changed between saving and starting it.",
-                    recoverySuggestion: "Tap CONNECT again — the app reloads the configuration on every attempt.",
+                    message: "The configuration changed between saving it and starting it.",
+                    recoverySuggestion: "Tap CONNECT again — the app rewrites and reloads the configuration on every attempt.",
                     underlyingDescription: "\(nsError.domain) \(nsError.code)",
                     isRetryable: true
                 )
-            case NEVPNError.configurationReadWriteFailed.rawValue:
-                return TunnelFailure(
-                    kind: .vpnConfigurationFailed,
-                    title: "Could not write the VPN configuration",
-                    message: "iOS refused to save the VPN configuration.",
-                    recoverySuggestion: "Make sure another VPN app is not already holding the single personal VPN slot on this device, and that you accepted the “ProxyTunnel would like to add VPN Configurations” prompt.",
-                    underlyingDescription: "\(nsError.domain) \(nsError.code)",
-                    isRetryable: true
-                )
+
             case 5:
-                // Empirically, when the packet tunnel entitlement is absent, this
-                // is the error iOS actually produces: NEVPNErrorDomain code 5
-                // ("configurationUnknown") carrying the text "permission denied"
-                // or "IPC failed". It never mentions entitlements, which is
-                // exactly why this app inspects its own provisioning profile and
-                // says so on the Diagnostics screen.
+                // This is the error developers actually report when the packet
+                // tunnel entitlement is missing: NEVPNErrorDomain code 5 carrying
+                // the text "permission denied". It never mentions entitlements,
+                // which is exactly why this app inspects its own provisioning
+                // profile and states the finding on the Diagnostics screen.
                 return TunnelFailure(
                     kind: .missingEntitlement,
-                    title: "iOS refused the VPN configuration (permission denied)",
-                    message: "iOS would not create the tunnel. On a build whose packet tunnel extension lacks the com.apple.developer.networking.networkextension entitlement this is the error you get — and the message iOS returns never says so.",
+                    title: "iOS refused to save the VPN configuration (permission denied)",
+                    message: "iOS would not write the tunnel configuration. On a build whose packet tunnel extension lacks the com.apple.developer.networking.networkextension entitlement this is the error you get — and the message iOS returns never says so.",
                     recoverySuggestion: entitlements.entitlementDefinitelyMissing
-                        ? "Diagnostics ▸ Signing & entitlements confirms the entitlement is missing from this build. Producing a working tunnel requires an Apple Developer Program membership."
+                        ? "Diagnostics ▸ Signing & entitlements confirms the entitlement is missing from this build. A working tunnel requires an Apple Developer Program membership."
                         : "Check Diagnostics ▸ Signing & entitlements, and make sure no other VPN app already holds the active VPN configuration on this device.",
                     underlyingDescription: "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)",
                     isRetryable: false
                 )
+
             default:
                 return TunnelFailure(
                     kind: .vpnConfigurationFailed,

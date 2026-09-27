@@ -26,6 +26,26 @@
 
 	  See docs/ENTITLEMENTS-AND-SIGNING.md.
 	-->
+	<!--
+	  The Network Extension entitlement is declared on the host app as well as on
+	  the extension. Apple's App Store validation rejects an upload where either
+	  bundle is missing it, and shipping Network Extension apps (WireGuard, for
+	  example) carry it on both. It is the extension that actually needs it at
+	  runtime, but declaring it on both keeps the bundle consistent and avoids a
+	  validation surprise if this app is ever distributed properly.
+	-->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+
+	<!--
+	  The App Group is shared with the extension so it can read the proxy password
+	  from a shared container rather than from the system VPN preferences.
+	  App Groups is one of the few capabilities a free Apple ID *can* provision,
+	  but the app checks at runtime whether it actually survived signing and falls
+	  back to passing the credential inline when it did not.
+	-->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.$(BUNDLE_ID_BASE)</string>
