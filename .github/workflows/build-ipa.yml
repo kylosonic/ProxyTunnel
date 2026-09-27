@@ -1,0 +1,342 @@
+#
+#  build-ipa.yml
+#  ─────────────────────────────────────────────────────────────────────────────
+#  Builds ProxyTunnel on a GitHub-hosted macOS runner and publishes an UNSIGNED
+#  ProxyTunnel.ipa as a workflow artifact.
+#
+#  Why unsigned:
+#
+#    * No Apple Developer Program membership is required to *build* an iOS app.
+#      Only to sign one that iOS will run without a sideloading tool.
+#    * No certificate, provisioning profile, team identifier or password lives in
+#      this repository, and none is needed for the build to succeed.
+#    * The artifact is then signed on the user's own machine by Sideloadly with
+#      their Apple ID.
+#
+#  What this workflow does NOT and cannot do: make the packet tunnel extension
+#  runnable on a device. That needs the
+#  com.apple.developer.networking.networkextension entitlement, which is only
+#  issued to Apple Developer Program members. See docs/ENTITLEMENTS-AND-SIGNING.md.
+#  The artifact this produces is still fully useful: it installs, it manages
+#  profiles, it stores credentials securely, and its connectivity test really does
+#  push traffic through your proxy and report the egress IP.
+#
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'Bundle identifier base (must be unique across all Apple teams)'
+        required: false
+        default: 'io.github.kylosonic.proxytunnel'
+        type: string
+      configuration:
+        description: 'Build configuration'
+        required: true
+        default: 'Release'
+        type: choice
+        options: [Release, Debug]
+      run_tests:
+        description: 'Run the unit and integration tests on a simulator'
+        required: true
+        default: true
+        type: boolean
+
+# Only one build per branch at a time; a new push cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Changing the runner image? `macos-15` is a GitHub-hosted image with Xcode 16.x.
+  # `macos-14` also works. See docs/BUILDING.md.
+  APP_NAME: ProxyTunnel
+  EXTENSION_NAME: ProxyTunnelExtension
+  SCHEME: ProxyTunnel
+  EXTENSION_SCHEME: ProxyTunnelExtension
+  TEST_SCHEME: ProxyTunnel
+  IPA_NAME: ProxyTunnel.ipa
+  BUNDLE_ID_BASE: ${{ github.event.inputs.bundle_id || 'io.github.kylosonic.proxytunnel' }}
+  BUILD_CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}
+  RUN_TESTS: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests }}
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show the toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/logs
+          {
+            echo "### Toolchain"
+            echo
+            echo '```'
+            echo "runner:            ${ImageOS:-unknown} / ${RUNNER_OS} ${RUNNER_ARCH}"
+            echo "xcode-select path: $(xcode-select -p)"
+            xcodebuild -version
+            echo "iphoneos SDK:      $(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo 'not found')"
+            echo "iphonesimulator:   $(xcrun --sdk iphonesimulator --show-sdk-version 2>/dev/null || echo 'not found')"
+            swift --version
+            echo "bash:              ${BASH_VERSION}"
+            echo '```'
+          } | tee artifacts/logs/toolchain.txt
+          {
+            echo
+            echo "### Installed Xcode versions"
+            echo
+            echo '```'
+            ls -1 /Applications | grep -i '^Xcode' || true
+            echo '```'
+          } | tee -a artifacts/logs/toolchain.txt
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          chmod +x Scripts/*.sh
+          ./Scripts/install-xcodegen.sh 2>&1 | tee artifacts/logs/xcodegen.txt
+
+      - name: Generate the Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml --project . 2>&1 | tee artifacts/logs/xcodegen-generate.txt
+          echo
+          echo "Generated targets:"
+          xcodebuild -list -project ProxyTunnel.xcodeproj | tee artifacts/logs/schemes.txt
+
+      - name: Resolve Swift package dependencies
+        run: |
+          set -euo pipefail
+          # ProxyTunnelCore is a *local* package, so this resolves instantly and
+          # needs no network. It is kept as an explicit step so that a future
+          # remote dependency fails here, with a clear message, rather than in the
+          # middle of the build.
+          xcodebuild -resolvePackageDependencies \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$SCHEME" \
+            2>&1 | tee artifacts/logs/resolve-packages.txt
+
+      - name: Build the Network Extension target (unsigned)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          xcodebuild build \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$EXTENSION_SCHEME" \
+            -configuration "$BUILD_CONFIGURATION" \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
+            2>&1 | tee artifacts/logs/build-extension.txt
+
+      - name: Build the main app target including the extension (unsigned)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          xcodebuild build \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration "$BUILD_CONFIGURATION" \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
+            2>&1 | tee artifacts/logs/build-app.txt
+
+      - name: Locate build products
+        id: products
+        run: |
+          set -euo pipefail
+          BUILT_DIR="build/DerivedData/Build/Products/${BUILD_CONFIGURATION}-iphoneos"
+          APP_PATH="$BUILT_DIR/${APP_NAME}.app"
+          APPEX_PATH="$BUILT_DIR/${APP_NAME}.app/PlugIns/${EXTENSION_NAME}.appex"
+          {
+            echo "built_dir=$BUILT_DIR"
+            echo "app_path=$APP_PATH"
+          } >> "$GITHUB_OUTPUT"
+          echo "Contents of $BUILT_DIR:"
+          ls -la "$BUILT_DIR"
+          echo
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::Expected the app bundle at $APP_PATH"
+            exit 1
+          fi
+          if [[ ! -d "$APPEX_PATH" ]]; then
+            echo "::error::The packet tunnel extension was not embedded at $APPEX_PATH"
+            ls -la "$APP_PATH" || true
+            exit 1
+          fi
+          echo "Extension is embedded correctly."
+
+      - name: Pick an available iOS simulator
+        id: simulator
+        if: ${{ env.RUN_TESTS == 'true' }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/pick_simulator.py <<'PY'
+          import json, re, sys
+          data = json.load(sys.stdin)["devices"]
+          candidates = []
+          for runtime, devices in data.items():
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              version = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+              for device in devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      candidates.append((version, device["name"]))
+          if not candidates:
+              sys.exit("no available iPhone simulator on this runner")
+          candidates.sort()
+          print(candidates[-1][1])
+          PY
+          DEVICE_NAME="$(xcrun simctl list devices available --json | python3 /tmp/pick_simulator.py)"
+          echo "Chosen simulator: $DEVICE_NAME"
+          echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | tee artifacts/logs/simulators.txt
+
+      - name: Run the test suite
+        if: ${{ env.RUN_TESTS == 'true' }}
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # The tests exercise ProxyTunnelCore: validation, Keychain, the protocol
+          # codecs, the TCP state machine, and real end-to-end proxying against a
+          # SOCKS5 and an HTTP CONNECT server started on loopback inside the test
+          # process.
+          #
+          # They do NOT and cannot verify that the packet tunnel starts on a
+          # device; that needs the Network Extension entitlement. docs/TESTING.md
+          # spells out the boundary.
+          xcodebuild test \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$TEST_SCHEME" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -derivedDataPath build/TestDerivedData \
+            -resultBundlePath artifacts/logs/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
+            2>&1 | tee artifacts/logs/tests.txt
+
+      - name: Package the unsigned IPA
+        id: package
+        run: |
+          set -euo pipefail
+          ./Scripts/make-ipa.sh "${{ steps.products.outputs.app_path }}" "$IPA_NAME" \
+            2>&1 | tee artifacts/logs/package.txt
+          echo "ipa_path=$IPA_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Record the build provenance
+        run: |
+          set -euo pipefail
+          {
+            echo "repository:     ${GITHUB_REPOSITORY}"
+            echo "commit:         ${GITHUB_SHA}"
+            echo "ref:            ${GITHUB_REF}"
+            echo "run id:         ${GITHUB_RUN_ID}"
+            echo "run attempt:    ${GITHUB_RUN_ATTEMPT}"
+            echo "workflow:       ${GITHUB_WORKFLOW}"
+            echo "actor:          ${GITHUB_ACTOR}"
+            echo "runner image:   ${ImageOS:-unknown}"
+            echo "configuration:  ${BUILD_CONFIGURATION}"
+            echo "bundle id base: ${BUNDLE_ID_BASE}"
+            echo "built at:       $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "xcode:          $(xcodebuild -version | tr '\n' ' ')"
+          } | tee artifacts/logs/provenance.txt
+          cp "$IPA_NAME" "artifacts/${IPA_NAME}"
+          shasum -a 256 "artifacts/${IPA_NAME}" | tee artifacts/logs/sha256.txt
+
+      - name: Validate the IPA
+        run: |
+          set -euo pipefail
+          ./Scripts/validate-ipa.sh "$IPA_NAME" "$BUNDLE_ID_BASE" 2>&1 | tee artifacts/logs/validation.txt
+
+      - name: Summarise the run
+        if: always()
+        run: |
+          {
+            echo "## ProxyTunnel unsigned iOS build"
+            echo
+            if [[ -f "$IPA_NAME" ]]; then
+              echo "**Artifact:** \`${IPA_NAME}\` — $(stat -f%z "$IPA_NAME" | awk '{ printf "%.1f MiB", $1/1048576 }')"
+              echo
+              echo '```'
+              shasum -a 256 "$IPA_NAME"
+              echo '```'
+            else
+              echo "**No IPA was produced.** Check \`build-app.txt\` / \`build-extension.txt\` in the log artifact."
+            fi
+            echo
+            echo "### Reminder"
+            echo
+            echo "This IPA is **unsigned**. Sideloadly will sign it with your Apple ID. That installation will run the app, the proxy editor, the Keychain storage and the connectivity test — but **not** the packet tunnel, because \`com.apple.developer.networking.networkextension\` cannot be provisioned with a free Apple ID. See \`docs/ENTITLEMENTS-AND-SIGNING.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the IPA
+        if: ${{ steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyTunnel-iOS-unsigned
+          path: |
+            ${{ env.IPA_NAME }}
+            artifacts/logs/sha256.txt
+            artifacts/logs/provenance.txt
+            artifacts/logs/validation.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyTunnel-iOS-build-logs
+          path: artifacts/logs
+          if-no-files-found: warn
+          retention-days: 30
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SIGNED BUILDS
+#
+#  Not enabled here, on purpose. A signed build needs an Apple Developer Program
+#  membership, a distribution or development certificate, and a provisioning
+#  profile — none of which belong in this repository.
+#
+#  When you have an account, docs/SIGNED-BUILDS.md contains a complete,
+#  ready-to-paste job that uses these repository secrets:
+#
+#      APPLE_TEAM_ID
+#      SIGNING_CERTIFICATE           (base64 of the .p12)
+#      SIGNING_CERTIFICATE_PASSWORD
+#      PROVISIONING_PROFILE          (base64 of the .mobileprovision)
+#      KEYCHAIN_PASSWORD
+#
+#  No placeholder or fake values for any of them exist anywhere in this
+#  repository, and the unsigned build above never reads them.
+# ─────────────────────────────────────────────────────────────────────────────

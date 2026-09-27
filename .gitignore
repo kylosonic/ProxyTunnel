@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Xcode / Swift
+# ---------------------------------------------------------------------------
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# XcodeGen generates the .xcodeproj from project.yml.
+# The generated project is intentionally NOT committed so that the repository
+# stays free of machine-specific absolute paths.
+ProxyTunnel.xcodeproj/
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# ---------------------------------------------------------------------------
+# Secrets / signing material.  NEVER commit any of these.
+# ---------------------------------------------------------------------------
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.csr
+*.mobileprovision
+*.provisionprofile
+*.p8
+*.pem
+*.key
+AuthKey_*.p8
+secrets/
+signing/
+fastlane/report.xml
+
+# ---------------------------------------------------------------------------
+# Local build / test output
+# ---------------------------------------------------------------------------
+artifacts/
+*.log
+!docs/**/*.log
+
+# ---------------------------------------------------------------------------
+# macOS / editor noise
+# ---------------------------------------------------------------------------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~

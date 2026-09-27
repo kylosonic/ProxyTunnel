@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  ────────────────────────────────────────────────────────────────────────
+	  MAIN APP ENTITLEMENTS
+	  ────────────────────────────────────────────────────────────────────────
+
+	  Only the App Group is requested here. The App Group lets the app hand the
+	  proxy password to the extension through a shared container instead of
+	  writing it into the system VPN preferences.
+
+	  The app deliberately does NOT request the Network Extension entitlement:
+	  the entitlement belongs to the process that hosts the packet tunnel, which
+	  is the .appex, not the host app.
+
+	  WHAT HAPPENS WHEN THIS IS SIGNED WITHOUT THE MATCHING PROVISIONING PROFILE
+	  -------------------------------------------------------------------------
+	  App Groups is one of the capabilities that a free Apple ID *can* provision,
+	  but if the signing tool cannot provision it, the entitlement is dropped and
+	  `FileManager.containerURL(forSecurityApplicationGroupIdentifier:)` returns
+	  nil. The app detects that at runtime, falls back to passing the credential
+	  inline in NETunnelProviderProtocol.providerConfiguration, and says so on the
+	  Diagnostics screen. Nothing crashes and nothing silently pretends to work.
+
+	  See docs/ENTITLEMENTS-AND-SIGNING.md.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.$(BUNDLE_ID_BASE)</string>
+	</array>
+</dict>
+</plist>

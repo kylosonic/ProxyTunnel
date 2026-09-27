@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  ────────────────────────────────────────────────────────────────────────
+	  PACKET TUNNEL PROVIDER ENTITLEMENTS
+	  ────────────────────────────────────────────────────────────────────────
+
+	  com.apple.developer.networking.networkextension with the value
+	  "packet-tunnel-provider" is THE entitlement that decides whether this
+	  extension may run at all. It is required on the extension target, and it
+	  cannot be provisioned with a free Apple ID: the Network Extensions
+	  capability is only available to Apple Developer Program members.
+
+	  If this entitlement is stripped during re-signing (which is what happens
+	  when the IPA is signed with a free Apple ID), iOS will not launch the
+	  extension. NETunnelProviderManager.saveToPreferences then fails with
+	  NEVPNErrorDomain error 1 (configurationInvalid) and/or the tunnel never
+	  reaches the .connected state.
+
+	  The app inspects its own embedded provisioning profile at runtime and tells
+	  you exactly which of these keys survived signing — see
+	  Diagnostics ▸ Signing & entitlements.
+
+	  See docs/ENTITLEMENTS-AND-SIGNING.md for the full analysis.
+	-->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+
+	<!--
+	  The App Group is shared with the host app so the extension can read the
+	  proxy password from the shared container rather than from the system VPN
+	  preferences. Optional: when it is unavailable the credential is passed
+	  inline instead.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.$(BUNDLE_ID_BASE)</string>
+	</array>
+</dict>
+</plist>

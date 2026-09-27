@@ -1,0 +1,23 @@
+# Normalise line endings so the repository behaves identically on macOS (where
+# the build runs) and Windows (where it is edited).
+#
+# The shell scripts in Scripts/ are executed by bash on the macOS runner. A CRLF
+# shebang line makes bash fail with "bad interpreter", which is a genuinely
+# confusing CI failure, so they are pinned to LF explicitly.
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.swift text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.plist text eol=lf
+*.pbxproj text eol=lf
+
+# Binary artefacts must never be line-ending converted.
+*.ipa   binary
+*.png   binary
+*.jpg   binary
+*.p12   binary
+*.mobileprovision binary
