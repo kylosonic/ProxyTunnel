@@ -67,7 +67,7 @@ env:
   EXTENSION_NAME: ProxyTunnelExtension
   SCHEME: ProxyTunnel
   EXTENSION_SCHEME: ProxyTunnelExtension
-  TEST_SCHEME: ProxyTunnel
+  TEST_SCHEME: ProxyTunnelCoreTests
   IPA_NAME: ProxyTunnel.ipa
   BUNDLE_ID_BASE: ${{ github.event.inputs.bundle_id || 'io.github.kylosonic.proxytunnel' }}
   BUILD_CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}

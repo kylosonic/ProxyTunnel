@@ -32,8 +32,14 @@ final class NEPacketTunnelFlowAdapter: PacketFlowIO {
         // The array form matters: each call crosses into the kernel's network
         // stack, so batching is a real performance win on a busy tunnel. The
         // engine's coalescer hands us batches.
-        flow.writePackets(packets, withProtocols: protocols) { success in
-            completion(success)
-        }
+        //
+        // `NEPacketTunnelFlow.writePackets(_:withProtocols:)` has no completion
+        // handler — the write is asynchronous and unacknowledged at this API
+        // level — so the interface's `Bool` result reports "the packets were
+        // handed to the flow" rather than "the kernel accepted them". That is the
+        // strongest statement the API supports, and the engine treats a `false`
+        // as a dropped batch.
+        flow.writePackets(packets, withProtocols: protocols)
+        completion(true)
     }
 }

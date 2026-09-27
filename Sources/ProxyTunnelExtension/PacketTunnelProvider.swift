@@ -43,7 +43,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Start
 
-    override func startTunnel(options: [String: Any]?, completionHandler: @escaping (Error?) -> Void) {
+    /// - Note: the options dictionary is `[String: NSObject]?` in the SDK, not
+    ///   `[String: Any]?`. Getting that wrong produces the confusing error
+    ///   "method does not override any method from its superclass".
+    override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         log.info("provider", "startTunnel called")
 
         // Mirror the log into the App Group container so the main app can show it.
@@ -178,19 +181,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Called by iOS when the device's network path changes (Wi-Fi ⇄ cellular).
+    /// Called by iOS when the device wakes.
     ///
-    /// Existing proxied connections belong to the old path and will fail; the
-    /// honest thing to do is say so and let TCP's own error handling surface it,
-    /// rather than silently pretending everything is fine.
+    /// There is deliberately no `sleep()` override: on iOS `NEProvider` exposes
+    /// sleep only through `sleep(completionHandler:)`, which the Swift overlay
+    /// imports as an `async` method rather than an overridable one. Nothing here
+    /// needs to run at sleep time — the sockets are owned by the system and the
+    /// engine's idle timers simply do not fire while the process is suspended.
     override func wake() {
         super.wake()
         log.info("provider", "device woke")
-    }
-
-    override func sleep() {
-        log.info("provider", "device sleeping")
-        super.sleep()
     }
 
     // MARK: - App messages
