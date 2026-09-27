@@ -40,8 +40,11 @@ final class AppEnvironment: ObservableObject {
         self.secrets = secrets
         self.settings = AppSettingsStore.load()
         self.profileStore = ProfileStore.makeDefault(secrets: secrets, log: log)
-        self.entitlements = EntitlementInspector.inspect()
-        self.tunnel = TunnelController(log: log, entitlements: entitlements)
+        // Bind to a local first: reading a stored property back here would be a
+        // use of `self` before every stored property is initialised.
+        let report = EntitlementInspector.inspect()
+        self.entitlements = report
+        self.tunnel = TunnelController(log: log, entitlements: report)
         self.mock = MockTunnelSession()
 
         log.info("app", "ProxyTunnel \(AppVersion.displayString) started")

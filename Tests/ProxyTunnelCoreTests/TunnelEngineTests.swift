@@ -156,7 +156,7 @@ final class TunnelEngineTests: XCTestCase {
         startEngine(configuration: makeConfiguration())
 
         XCTAssertTrue(deliver([clientSYN()]))
-        let synAck = try XCTUnwrap(waitForWrittenPacket { $0.1.flags.contains(.syn) && $0.1.flags.contains(.ack) })
+        let synAck = try XCTUnwrap(waitForWrittenPacket { _, segment in segment.flags.contains(.syn) && segment.flags.contains(.ack) })
 
         XCTAssertEqual(synAck.0.source, fakeDestination)
         XCTAssertEqual(synAck.0.destination, TestPackets.clientAddress)
@@ -170,7 +170,7 @@ final class TunnelEngineTests: XCTestCase {
         startEngine(configuration: makeConfiguration())
 
         XCTAssertTrue(deliver([clientSYN()]))
-        let synAck = try XCTUnwrap(waitForWrittenPacket { $0.1.flags.contains(.syn) && $0.1.flags.contains(.ack) })
+        let synAck = try XCTUnwrap(waitForWrittenPacket { _, segment in segment.flags.contains(.syn) && segment.flags.contains(.ack) })
 
         // Complete the handshake and send a payload.
         let payload = Data("ping through the tunnel".utf8)
@@ -203,7 +203,7 @@ final class TunnelEngineTests: XCTestCase {
             clientSYN(destination: IPAddress(presentationName: "127.0.0.1")!, destinationPort: 80)
         ]))
 
-        let reset = try XCTUnwrap(waitForWrittenPacket { $0.1.flags.contains(.rst) })
+        let reset = try XCTUnwrap(waitForWrittenPacket { _, segment in segment.flags.contains(.rst) })
         XCTAssertEqual(reset.1.flags.contains(.rst), true)
         XCTAssertEqual(engine.statistics.droppedBlockedDestination, 1)
         XCTAssertEqual(engine.statistics.tcpConnectionsOpened, 0)
@@ -216,7 +216,7 @@ final class TunnelEngineTests: XCTestCase {
         XCTAssertTrue(deliver([
             clientSYN(destination: IPAddress(presentationName: "127.0.0.1")!, destinationPort: socksPort)
         ]))
-        XCTAssertNotNil(waitForWrittenPacket { $0.1.flags.contains(.rst) })
+        XCTAssertNotNil(waitForWrittenPacket { _, segment in segment.flags.contains(.rst) })
     }
 
     func testUnsolicitedDataForAnUnknownFlowGetsAReset() throws {
@@ -229,7 +229,7 @@ final class TunnelEngineTests: XCTestCase {
                 payload: Data("stray".utf8)
             )
         ]))
-        XCTAssertNotNil(waitForWrittenPacket { $0.1.flags.contains(.rst) })
+        XCTAssertNotNil(waitForWrittenPacket { _, segment in segment.flags.contains(.rst) })
     }
 
     func testFragmentedPacketIsDroppedAndCounted() throws {
@@ -324,7 +324,7 @@ final class TunnelEngineTests: XCTestCase {
         socksServer.redirectAllConnectionsTo = (host: "127.0.0.1", port: echoPort)
         startEngine(configuration: makeConfiguration())
         XCTAssertTrue(deliver([clientSYN()]))
-        _ = try XCTUnwrap(waitForWrittenPacket { $0.1.flags.contains(.syn) })
+        _ = try XCTUnwrap(waitForWrittenPacket { _, segment in segment.flags.contains(.syn) })
 
         let payload = engine.makeStatusPayload()
         XCTAssertEqual(payload.engineState, "running")
@@ -411,9 +411,17 @@ final class TunnelEngineTests: XCTestCase {
 
         // And the NetworkExtension objects were actually configured, not just
         // described.
-        XCTAssertEqual(built.settings.ipv4Settings?.includedRoutes.count, 1)
-        XCTAssertEqual(built.settings.ipv4Settings?.excludedRoutes.count, 1)
-        XCTAssertEqual(built.settings.ipv6Settings?.includedRoutes.count, 1)
+        guard let ipv4 = built.settings.ipv4Settings else {
+            return XCTFail("no IPv4 settings were produced")
+        }
+        XCTAssertEqual(ipv4.includedRoutes.count, 1)
+        XCTAssertEqual(ipv4.excludedRoutes.count, 1)
+
+        guard let ipv6 = built.settings.ipv6Settings else {
+            return XCTFail("no IPv6 settings were produced")
+        }
+        XCTAssertEqual(ipv6.includedRoutes.count, 1)
+
         XCTAssertEqual(built.settings.dnsSettings?.servers, ["198.51.100.53"])
         XCTAssertEqual(built.settings.dnsSettings?.matchDomains, [""])
         XCTAssertEqual(built.settings.mtu, NSNumber(value: TunnelNetworkDefaults.mtu))
