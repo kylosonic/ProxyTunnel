@@ -169,6 +169,12 @@ final class LocalSOCKS5Server {
 
     private var listener: NWListener?
     private var connections: [NWConnection] = []
+    /// Per-connection state machines, retained explicitly.
+    ///
+    /// The session's receive callback captures `self` weakly, so without this the
+    /// session is deallocated the moment `newConnectionHandler` returns: the server
+    /// accepts the connection and then never speaks.
+    private var sessions: [SOCKS5ServerSession] = []
     private let queue = DispatchQueue(label: "test.socks5")
 
     /// Whether the listener had to fall back to binding on every interface.
@@ -188,6 +194,7 @@ final class LocalSOCKS5Server {
                 self.connections.append(connection)
                 connection.start(queue: self.queue)
                 let session = SOCKS5ServerSession(server: self, connection: connection)
+                self.sessions.append(session)
                 session.begin()
             }
         }
@@ -201,6 +208,7 @@ final class LocalSOCKS5Server {
         listener = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
+        sessions.removeAll()
     }
 
     fileprivate func recordHandshake(destination: String) {

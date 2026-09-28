@@ -184,6 +184,15 @@ private final class LengthPrefixedReader {
     private var isFinished = false
     private var timeoutWork: DispatchWorkItem?
 
+    /// Keeps this reader alive while the read is in flight.
+    ///
+    /// The receive callback captures `self` weakly so that a DNS server which never
+    /// answers cannot leak a reader, which means nothing else retains it:
+    /// `readLengthPrefixedMessage` returns as soon as `begin()` does. Released in
+    /// `finish`, which runs exactly once. See `ProxySession.Runner` for the same
+    /// pattern and the failure it prevents.
+    private var selfRetain: LengthPrefixedReader?
+
     init(
         stream: DuplexByteStream,
         queue: DispatchQueue,
@@ -199,6 +208,7 @@ private final class LengthPrefixedReader {
     }
 
     func begin() {
+        selfRetain = self
         let work = DispatchWorkItem { [weak self] in
             self?.finish(.failure(.connectionTimeout))
         }
@@ -248,6 +258,8 @@ private final class LengthPrefixedReader {
         isFinished = true
         timeoutWork?.cancel()
         timeoutWork = nil
-        completion(result)
+        let callback = completion
+        selfRetain = nil
+        callback(result)
     }
 }

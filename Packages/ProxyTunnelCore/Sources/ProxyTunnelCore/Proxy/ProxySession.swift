@@ -114,6 +114,21 @@ private final class Runner {
     private var timeoutWork: DispatchWorkItem?
     private var isFinished = false
 
+    /// Keeps this runner alive for the duration of the handshake.
+    ///
+    /// Every callback below captures `self` **weakly**, so that a stalled
+    /// handshake cannot leak a runner, its stream, or its buffer. The consequence
+    /// is that nothing else retains the runner either: `ProxySession.run` returns
+    /// as soon as `start()` does, and without this the runner would be deallocated
+    /// mid-handshake. The first write still goes out, and then every completion
+    /// finds `self == nil` and returns — so the handshake silently never finishes,
+    /// which looks exactly like a proxy that accepted the connection and went
+    /// quiet.
+    ///
+    /// The reference is released in `finish`, which runs exactly once, so this is
+    /// a self-retention rather than a retain cycle.
+    private var selfRetain: Runner?
+
     /// Refuse to buffer more than this while hunting for a reply. A proxy that
     /// sends this much before answering is broken or hostile.
     private static let maximumHandshakeBuffer = 64 * 1024
@@ -137,6 +152,9 @@ private final class Runner {
     }
 
     func start() {
+        // Take a reference to ourselves: see `selfRetain`.
+        selfRetain = self
+
         log?.debug("proxy", "handshake start: \(endpoint) -> \(destination.redactedDescription)")
 
         let work = DispatchWorkItem { [weak self] in
@@ -408,6 +426,10 @@ private final class Runner {
         case .failure(let error):
             log?.warning("proxy", "handshake failed: \(error.diagnosticDescription)")
         }
-        completion(result)
+        // Deliver before dropping the self-reference, so a caller that immediately
+        // tears the stream down still sees a live runner.
+        let callback = completion
+        selfRetain = nil
+        callback(result)
     }
 }
