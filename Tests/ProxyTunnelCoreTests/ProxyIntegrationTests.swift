@@ -42,10 +42,22 @@ final class ProxyIntegrationTests: XCTestCase {
         httpPort = try httpServer.start()
 
         // These tests are only meaningful if the process can actually accept an
-        // inbound loopback connection. Skip — loudly, with the reason — rather than
-        // fail with connection timeouts that say nothing about the code.
-        print("[ProxyTunnelTests] test servers bound: echo=\(echoPort) (loopback-pinned: \(echoServer.isPinnedToLoopback)), socks5=\(socksPort), http=\(httpPort)")
+        // inbound loopback connection *and* the production transport can reach it.
+        // Skip — loudly, with the reason — rather than fail with connection
+        // timeouts that say nothing about the code.
+        let echoReachable = LoopbackRequirement.isReachable(port: echoPort)
+        let socksReachable = LoopbackRequirement.isReachable(port: socksPort)
+        let socksViaProductionTransport = LoopbackRequirement.canOpenProxyTransport(port: socksPort)
+        print("""
+        [ProxyTunnelTests] ports: echo=\(echoPort) (pinned: \(echoServer.isPinnedToLoopback)) \
+        socks5=\(socksPort) (pinned: \(socksServer.isPinnedToLoopback)) \
+        http=\(httpPort) (pinned: \(httpServer.isPinnedToLoopback)) | \
+        plain-probe reachable: echo=\(echoReachable) socks=\(socksReachable) | \
+        production-transport reachable: socks=\(socksViaProductionTransport)
+        """)
+
         try LoopbackRequirement.require(port: echoPort)
+        try LoopbackRequirement.requireProxyTransport(port: socksPort)
     }
 
     override func tearDownWithError() throws {

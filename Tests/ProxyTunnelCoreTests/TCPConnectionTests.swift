@@ -409,19 +409,31 @@ final class TCPConnectionTests: XCTestCase {
     func testProxyFailureSendsAResetSoTheAppFailsFast() throws {
         opener.behaviour = .fail(.connectionFailed("refused"))
         makeConnection()
-        try completeHandshake()
-        // Note: `emitted` is deliberately NOT cleared here. The proxy failure is
-        // queued when the SYN is handled, so the RST can legitimately be written
-        // during the handshake's settle window.
-        settle(0.3)
+
+        // Deliberately not `completeHandshake()`: the failure is queued as soon as
+        // the SYN is handled, so the last packet written may be the RST rather than
+        // the SYN-ACK. Both must be present, and asserting on "the last one" would
+        // be a race.
+        queue.sync {
+            connection.open(withSYN: TCPSegment(
+                sourcePort: 49152, destinationPort: 443,
+                sequenceNumber: synSequence, acknowledgmentNumber: 0,
+                flags: [.syn], windowSize: 65535,
+                options: TestPackets.synOptions
+            ))
+        }
+        settle(0.4)
 
         XCTAssertEqual(closings.first?.0, .proxyUnavailable(.connectionFailed("refused")))
 
-        // The client must be told, not left hanging.
         let segments = emitted.compactMap { try? TestPackets.parseTCP($0).segment }
         XCTAssertTrue(
+            segments.contains { $0.flags.contains(.syn) && $0.flags.contains(.ack) },
+            "the SYN-ACK must still be sent; got \(segments.map(\.flags.names))"
+        )
+        XCTAssertTrue(
             segments.contains { $0.flags.contains(.rst) },
-            "expected a RST after a proxy failure; sent \(segments.map(\.flags.names))"
+            "the client must be told, not left hanging; got \(segments.map(\.flags.names))"
         )
     }
 

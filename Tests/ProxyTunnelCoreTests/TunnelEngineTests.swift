@@ -45,8 +45,16 @@ final class TunnelEngineTests: XCTestCase {
 
         // The engine tests dial a real proxy, so they need the same capability the
         // integration tests do. See LoopbackRequirement.
-        print("[ProxyTunnelTests] engine test servers bound: socks5=\(socksPort) (loopback-pinned: \(socksServer.isPinnedToLoopback)), echo=\(echoPort)")
+        let socksReachable = LoopbackRequirement.isReachable(port: socksPort)
+        let socksViaProductionTransport = LoopbackRequirement.canOpenProxyTransport(port: socksPort)
+        print("""
+        [ProxyTunnelTests] engine ports: socks5=\(socksPort) (pinned: \(socksServer.isPinnedToLoopback)) \
+        echo=\(echoPort) | plain-probe reachable: \(socksReachable) | \
+        production-transport reachable: \(socksViaProductionTransport)
+        """)
+
         try LoopbackRequirement.require(port: socksPort)
+        try LoopbackRequirement.requireProxyTransport(port: socksPort)
     }
 
     override func tearDownWithError() throws {
@@ -98,6 +106,23 @@ final class TunnelEngineTests: XCTestCase {
     private func deliver(_ packets: [Data], timeout: TimeInterval = 3) -> Bool {
         guard flow.waitForPendingRead(timeout: timeout) else { return false }
         return flow.deliver(packets)
+    }
+
+    /// Feeds packets in and waits for the engine queue to finish with them.
+    ///
+    /// `deliver` hands the batch to the engine's `readPackets` completion, which
+    /// hops onto the engine queue before touching any state. Without this wait, a
+    /// test that reads a counter straight afterwards is racing the engine — which
+    /// is exactly what made the statistics assertions flaky.
+    private func deliverAndSettle(_ packets: [Data], settleFor: TimeInterval = 0.2, timeout: TimeInterval = 3) {
+        XCTAssertTrue(deliver(packets, timeout: timeout), "the engine is not reading packets")
+        settle(settleFor)
+    }
+
+    private func settle(_ seconds: TimeInterval) {
+        let expectation = XCTestExpectation(description: "settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { expectation.fulfill() }
+        wait(for: [expectation], timeout: seconds + 3)
     }
 
     private func waitForWrittenPacket(
@@ -242,11 +267,9 @@ final class TunnelEngineTests: XCTestCase {
 
         var packet = clientSYN()
         packet[6] = 0x20   // set MF in the IPv4 flags field
-        XCTAssertTrue(deliver([packet]))
+        deliverAndSettle([packet], settleFor: 0.4)
 
         // Nothing may be written back …
-        let deadline = Date().addingTimeInterval(0.4)
-        while Date() < deadline { _ = flow.waitForPendingRead(timeout: 0.02) }
         XCTAssertTrue(flow.snapshot().isEmpty)
         XCTAssertEqual(engine.statistics.droppedFragments, 1)
         XCTAssertEqual(engine.statistics.tcpConnectionsOpened, 0)
@@ -254,7 +277,7 @@ final class TunnelEngineTests: XCTestCase {
 
     func testMalformedPacketIsDroppedAndCounted() {
         startEngine(configuration: makeConfiguration())
-        XCTAssertTrue(deliver([Data(repeating: 0x00, count: 24)]))
+        deliverAndSettle([Data(repeating: 0x00, count: 24)])
         XCTAssertEqual(engine.statistics.droppedMalformedPackets, 1)
     }
 
@@ -267,7 +290,7 @@ final class TunnelEngineTests: XCTestCase {
             payload: [8, 0, 0, 0],
             identification: 1
         )
-        XCTAssertTrue(deliver([icmp]))
+        deliverAndSettle([icmp])
         XCTAssertEqual(engine.statistics.droppedUnsupportedTransport, 1)
     }
 
@@ -282,7 +305,7 @@ final class TunnelEngineTests: XCTestCase {
             payload: [UInt8](raw),
             identification: 1
         )
-        XCTAssertTrue(deliver([packet]))
+        deliverAndSettle([packet])
         XCTAssertEqual(engine.statistics.udpDatagramsDropped, 1)
         XCTAssertEqual(engine.statistics.udpDatagramsRelayed, 0)
     }
@@ -454,13 +477,5 @@ final class TunnelEngineTests: XCTestCase {
         XCTAssertTrue(lines.contains("IPv4 included routes"))
         XCTAssertTrue(lines.contains("IPv4 excluded routes"))
         XCTAssertTrue(lines.contains("DNS servers"))
-    }
-
-    // MARK: Helpers
-
-    private func settle(_ seconds: TimeInterval) {
-        let expectation = XCTestExpectation(description: "settle")
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { expectation.fulfill() }
-        wait(for: [expectation], timeout: seconds + 3)
     }
 }
