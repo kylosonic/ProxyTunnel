@@ -239,8 +239,43 @@ Add, edit, delete, enable/disable and select proxy profiles. Each profile stores
 a name, host, port, protocol, optional username and password, and free-form
 notes.
 
-The **Test connection** button on the edit screen is the important one. It
-performs a real end-to-end check and reports:
+#### Pasting a proxy instead of typing it
+
+**+** ▸ **Paste from clipboard…** accepts whatever your provider gave you, and
+shows what it understood before anything is saved. All of these work, mixed
+together, one per line:
+
+```
+# ProxyCheap — Germany
+socks5://example-user:example-password@203.0.113.7:1080
+198.51.100.9:8080:example-user:example-password
+example-user:example-password@198.51.100.9:1080
+198.51.100.9:1080@example-user:example-password
+203.0.113.7:1080
+203.0.113.7 1080 example-user example-password
+host=203.0.113.7 port=1080 user=example-user pass=example-password
+server:203.0.113.7:port:1080:username:example-user:password:example-password
+Frankfurt | socks5://example-user:example-password@203.0.113.7:1080
+{"host":"203.0.113.7","port":1080,"username":"example-user","password":"example-password"}
+[{"host":"…","port":1080}, {"host":"…","port":8080,"protocol":"http"}]
+```
+
+`http://` and `https://` map to the HTTP CONNECT and HTTPS CONNECT protocols;
+`socks5h://` and `socks://` map to SOCKS5. Blank lines and lines starting with
+`#`, `//` or `;` are ignored, so a comment header can be pasted with the list.
+
+Every line gets a verdict. Anything that could be read two ways — `a:b:c:d` is
+genuinely ambiguous — says which reading was assumed, so a wrong guess is visible
+before you save it. **Skip proxies I already have** (on by default) matches on
+host, port and protocol, so re-pasting a list after your provider rotates
+passwords changes nothing.
+
+Passwords go straight to the Keychain on Add. They are masked on the paste
+screen, never written to the app's logs, and the parsed proxy then goes through
+exactly the same validator the manual form uses.
+
+The **Test connection** button on the edit screen remains the way to prove a
+proxy actually works. It performs a real end-to-end check and reports:
 
 ```
 Proxy host resolved to 203.0.113.7

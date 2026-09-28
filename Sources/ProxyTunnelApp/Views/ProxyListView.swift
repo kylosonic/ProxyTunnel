@@ -11,19 +11,14 @@ struct ProxyListView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var editingProfile: ProxyProfile?
     @State private var isAddingNew = false
+    @State private var isPasting = false
     @State private var pendingDeletion: ProxyProfile?
 
     var body: some View {
         NavigationStack {
             Group {
                 if environment.profileStore.profiles.isEmpty {
-                    EmptyStateView(
-                        symbol: "server.rack",
-                        title: "No proxies yet",
-                        message: "Add a proxy using the host, port, protocol and credentials your provider gave you.",
-                        actionTitle: "Add proxy",
-                        action: { isAddingNew = true }
-                    )
+                    emptyState
                 } else {
                     list
                 }
@@ -32,8 +27,17 @@ struct ProxyListView: View {
             .navigationTitle("Proxies")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        isAddingNew = true
+                    Menu {
+                        Button {
+                            isAddingNew = true
+                        } label: {
+                            Label("Add manually", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            isPasting = true
+                        } label: {
+                            Label("Paste from clipboard…", systemImage: "doc.on.clipboard")
+                        }
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -42,6 +46,10 @@ struct ProxyListView: View {
             }
             .sheet(isPresented: $isAddingNew) {
                 ProxyEditView(mode: .create)
+                    .environmentObject(environment)
+            }
+            .sheet(isPresented: $isPasting) {
+                ProxyPasteView()
                     .environmentObject(environment)
             }
             .sheet(item: $editingProfile) { profile in
@@ -67,6 +75,44 @@ struct ProxyListView: View {
                 Text("The stored password for this proxy is deleted from the Keychain as well.")
             }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(Theme.tertiaryText)
+            Text("No proxies yet")
+                .font(.headline)
+                .foregroundStyle(Theme.primaryText)
+            Text("Paste one in whatever format your provider gave you — a socks5:// link, host:port:user:password, or a JSON block — or type it in by hand.")
+                .font(.subheadline)
+                .foregroundStyle(Theme.secondaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 10) {
+                Button {
+                    isPasting = true
+                } label: {
+                    Label("Paste a proxy", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    isAddingNew = true
+                } label: {
+                    Label("Add manually", systemImage: "square.and.pencil")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .controlSize(.large)
+            .padding(.top, 4)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var list: some View {
