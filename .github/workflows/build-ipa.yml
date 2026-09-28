@@ -229,30 +229,60 @@ jobs:
           echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices available | tee artifacts/logs/simulators.txt
 
-      - name: Run the test suite
-        id: tests
+      # The suite is split into two batches on purpose.
+      #
+      # Batch A is pure logic — validation, models, codecs, the profile store — and
+      # finishes in seconds. Batch B needs the Keychain and real loopback sockets,
+      # and is where a slow or stuck test would live. Running them separately means
+      # a hang in B still leaves A's result, and the failure points at a cause
+      # rather than at "the tests".
+      - name: Run the test suite (logic: validation, models, codecs, storage)
+        id: tests_logic
         if: always() && env.RUN_TESTS == 'true'
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           set -o pipefail
-          # The tests exercise ProxyTunnelCore: validation, Keychain, the protocol
-          # codecs, the TCP state machine, and real end-to-end proxying against a
-          # SOCKS5 and an HTTP CONNECT server started on loopback inside the test
-          # process.
-          #
-          # They do NOT and cannot verify that the packet tunnel starts on a
-          # device; that needs the Network Extension entitlement. docs/TESTING.md
-          # spells out the boundary.
           xcodebuild test \
             -project ProxyTunnel.xcodeproj \
             -scheme "$TEST_SCHEME" \
             -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
             -derivedDataPath build/TestDerivedData \
-            -resultBundlePath artifacts/logs/TestResults.xcresult \
+            -resultBundlePath artifacts/logs/TestResults-logic.xcresult \
+            -skip-testing:ProxyTunnelCoreTests/TCPConnectionTests \
+            -skip-testing:ProxyTunnelCoreTests/TunnelEngineTests \
+            -skip-testing:ProxyTunnelCoreTests/ProxyIntegrationTests \
+            -skip-testing:ProxyTunnelCoreTests/KeychainSecretStoreTests \
             CODE_SIGNING_ALLOWED=NO \
             BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
-            2>&1 | tee artifacts/logs/tests.txt
+            2>&1 | tee artifacts/logs/tests-logic.txt
+
+      - name: Run the test suite (Keychain, TCP stack, tunnel engine, live proxies)
+        id: tests_integration
+        if: always() && env.RUN_TESTS == 'true'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # These are the tests that exercise the real Security framework and real
+          # sockets: a SOCKS5 server and an HTTP CONNECT server started on loopback
+          # inside the test process, plus the full tunnel engine driven by a
+          # scripted virtual interface.
+          xcodebuild test \
+            -project ProxyTunnel.xcodeproj \
+            -scheme "$TEST_SCHEME" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -derivedDataPath build/TestDerivedData \
+            -resultBundlePath artifacts/logs/TestResults-integration.xcresult \
+            -only-testing:ProxyTunnelCoreTests/KeychainSecretStoreTests \
+            -only-testing:ProxyTunnelCoreTests/TCPConnectionTests \
+            -only-testing:ProxyTunnelCoreTests/TunnelEngineTests \
+            -only-testing:ProxyTunnelCoreTests/ProxyIntegrationTests \
+            CODE_SIGNING_ALLOWED=NO \
+            BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
+            2>&1 | tee artifacts/logs/tests-integration.txt
 
       # Because the build and test steps above run with `if: always()` so that one
       # run reports every error, their outcomes have to be turned back into a
@@ -262,15 +292,17 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          echo "build_app       = ${{ steps.build_app.outcome }}"
-          echo "build_extension = ${{ steps.build_extension.outcome }}"
-          echo "tests           = ${{ steps.tests.outcome }}"
+          echo "build_app         = ${{ steps.build_app.outcome }}"
+          echo "build_extension   = ${{ steps.build_extension.outcome }}"
+          echo "tests_logic       = ${{ steps.tests_logic.outcome }}"
+          echo "tests_integration = ${{ steps.tests_integration.outcome }}"
 
           failed=0
           for outcome in \
             "${{ steps.build_app.outcome }}" \
             "${{ steps.build_extension.outcome }}" \
-            "${{ steps.tests.outcome }}"; do
+            "${{ steps.tests_logic.outcome }}" \
+            "${{ steps.tests_integration.outcome }}"; do
             case "$outcome" in
               success|skipped) ;;
               *) failed=1 ;;

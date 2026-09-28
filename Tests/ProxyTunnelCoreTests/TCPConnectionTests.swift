@@ -37,6 +37,8 @@ final class TCPConnectionTests: XCTestCase {
 
     private func makeConnection(
         idleTimeout: TimeInterval = 1800,
+        initialRTO: TimeInterval = 0.2,
+        maximumRetransmissions: Int = 3,
         trace: Bool = false
     ) {
         let configuration = TCPConnection.Configuration(
@@ -46,8 +48,8 @@ final class TCPConnectionTests: XCTestCase {
             remotePort: 443,
             maximumSegmentSize: 1460,
             idleTimeout: idleTimeout,
-            initialRetransmissionTimeout: 0.2,
-            maximumRetransmissions: 3,
+            initialRetransmissionTimeout: initialRTO,
+            maximumRetransmissions: maximumRetransmissions,
             tracePackets: trace
         )
         connection = TCPConnection(
@@ -276,7 +278,10 @@ final class TCPConnectionTests: XCTestCase {
     }
 
     func testGivesUpAfterTheRetransmissionLimit() throws {
-        makeConnection()
+        // A 50 ms initial RTO with three retries means the connection gives up at
+        // roughly 50 + 100 + 200 + 400 = 750 ms, so the test does not have to sit
+        // through the production backoff.
+        makeConnection(initialRTO: 0.05, maximumRetransmissions: 3)
         try completeHandshake()
 
         let stream = try XCTUnwrap(opener.lastStream)
@@ -284,6 +289,7 @@ final class TCPConnectionTests: XCTestCase {
         settle(1.5)
 
         XCTAssertTrue(closings.contains { $0.0 == .timedOut }, "expected a timeout close, got \(closings.map(\.0))")
+        XCTAssertEqual(connection.statistics.retransmissions, 4, "three retries plus the final attempt")
     }
 
     func testAcknowledgingClearsTheOutstandingBytes() throws {
@@ -335,18 +341,29 @@ final class TCPConnectionTests: XCTestCase {
 
     func testProxyEOFProducesAFinAfterQueuedData() throws {
         makeConnection()
-        try completeHandshake()
+        let synAck = try completeHandshake()
         emitted.removeAll()
 
+        let payload = Data("bye".utf8)
         let stream = try XCTUnwrap(opener.lastStream)
-        stream.feed(Data("bye".utf8))
+        stream.feed(payload)
         settle()
+
         stream.feedEOF()
         settle(0.3)
 
-        let finalSegment = try TestPackets.parseTCP(try XCTUnwrap(emitted.last)).segment
-        XCTAssertTrue(finalSegment.flags.contains(.fin))
-        XCTAssertEqual(finalSegment.sequenceNumber, synSequence &+ 1)
+        // The FIN must appear somewhere in what we sent, not necessarily last: the
+        // retransmission timer may fire for the still-unacknowledged payload in the
+        // same window, and a retransmitted data segment is legitimately "later"
+        // than the FIN.
+        let segments = emitted.compactMap { try? TestPackets.parseTCP($0).segment }
+        guard let fin = segments.first(where: { $0.flags.contains(.fin) }) else {
+            return XCTFail("no FIN was sent after the proxy closed; sent \(segments.map(\.flags.names))")
+        }
+        // The FIN occupies the sequence number immediately after the three payload
+        // bytes, which themselves follow the SYN.
+        XCTAssertEqual(fin.sequenceNumber, synAck.sequenceNumber &+ 1 &+ UInt32(payload.count))
+        XCTAssertEqual(fin.acknowledgmentNumber, synSequence &+ 1)
     }
 
     func testClientFINIsAcknowledged() throws {
@@ -363,8 +380,12 @@ final class TCPConnectionTests: XCTestCase {
         }
         settle(0.2)
 
-        XCTAssertFalse(emitted.isEmpty, "a FIN must be acknowledged")
-        XCTAssertEqual(connection.statistics.segmentsOut > 0, true)
+        // A FIN must be acknowledged; a silent drop would leave the app waiting.
+        let segments = emitted.compactMap { try? TestPackets.parseTCP($0).segment }
+        XCTAssertTrue(
+            segments.contains { $0.flags.contains(.ack) && $0.acknowledgmentNumber == synSequence &+ 2 },
+            "expected an ACK covering the FIN; got \(segments.map { "\($0.flags.names) ack=\($0.acknowledgmentNumber)" })"
+        )
     }
 
     func testResetClosesImmediately() throws {
@@ -389,15 +410,19 @@ final class TCPConnectionTests: XCTestCase {
         opener.behaviour = .fail(.connectionFailed("refused"))
         makeConnection()
         try completeHandshake()
-        emitted.removeAll()
+        // Note: `emitted` is deliberately NOT cleared here. The proxy failure is
+        // queued when the SYN is handled, so the RST can legitimately be written
+        // during the handshake's settle window.
         settle(0.3)
 
         XCTAssertEqual(closings.first?.0, .proxyUnavailable(.connectionFailed("refused")))
+
         // The client must be told, not left hanging.
-        let sawReset = emitted.contains { packet in
-            (try? TestPackets.parseTCP(packet))?.segment.flags.contains(.rst) ?? false
-        }
-        XCTAssertTrue(sawReset, "expected a RST after a proxy failure")
+        let segments = emitted.compactMap { try? TestPackets.parseTCP($0).segment }
+        XCTAssertTrue(
+            segments.contains { $0.flags.contains(.rst) },
+            "expected a RST after a proxy failure; sent \(segments.map(\.flags.names))"
+        )
     }
 
     func testIdleTimeoutClosesTheConnection() throws {

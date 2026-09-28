@@ -239,7 +239,8 @@ final class ProxyIntegrationTests: XCTestCase {
         let endpoint = ProxyEndpoint(host: "127.0.0.1", port: Int(echoPort), protocolType: .socks5)
         let error = connectExpectingFailure(
             endpoint: endpoint,
-            targets: [TransportTarget(host: "127.0.0.1", port: echoPort)]
+            targets: [TransportTarget(host: "127.0.0.1", port: echoPort)],
+            timeout: 5
         )
         guard case .badServerResponse(let detail) = error else {
             return XCTFail("expected badServerResponse, got \(error.diagnosticDescription)")
@@ -253,7 +254,8 @@ final class ProxyIntegrationTests: XCTestCase {
         let endpoint = ProxyEndpoint(host: "127.0.0.1", port: Int(echoPort), protocolType: .httpConnect)
         let error = connectExpectingFailure(
             endpoint: endpoint,
-            targets: [TransportTarget(host: "127.0.0.1", port: echoPort)]
+            targets: [TransportTarget(host: "127.0.0.1", port: echoPort)],
+            timeout: 5
         )
         guard case .badServerResponse = error else {
             return XCTFail("expected badServerResponse, got \(error.diagnosticDescription)")
@@ -284,9 +286,11 @@ final class ProxyIntegrationTests: XCTestCase {
     // MARK: Probe
 
     func testProbeReportsTheEgressAddress() async throws {
-        // The "origin server" returns a fixed IP as its body, exactly like
-        // api.ipify.org does.
-        echoServer.response = Data("203.0.113.9".utf8)
+        // The "origin server" returns a complete HTTP response whose body is the
+        // caller's public IP, exactly like api.ipify.org does.
+        echoServer.response = Data(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 11\r\nConnection: close\r\n\r\n203.0.113.9".utf8
+        )
         socksServer.redirectAllConnectionsTo = (host: "127.0.0.1", port: echoPort)
 
         var configuration = ProxyProbeConfiguration.default
@@ -305,6 +309,10 @@ final class ProxyIntegrationTests: XCTestCase {
         XCTAssertEqual(report.httpStatus, 200)
         XCTAssertEqual(report.egressIP, "203.0.113.9")
         XCTAssertTrue(report.isSuccess)
+        XCTAssertEqual(report.dialedAddress, "127.0.0.1")
+        XCTAssertNotNil(report.tcpConnectDuration)
+        XCTAssertNotNil(report.handshakeDuration)
+        XCTAssertTrue(report.summaryLines.contains { $0.contains("Traffic exited via 203.0.113.9") })
     }
 
     func testProbeReportsAFailureWhenNothingIsListening() async {

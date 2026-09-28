@@ -97,11 +97,39 @@ public enum ProxyConnector {
         var remaining = targets
         var lastError: ProxyError = .connectionFailed("no address was tried")
         var attempts: [String] = []
+        var hasCompleted = false
+        var watchdog: DispatchWorkItem?
+
+        /// Guarantees the completion handler runs exactly once.
+        func finish(_ result: Result<ProxyConnection, ProxyError>) {
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            watchdog?.cancel()
+            watchdog = nil
+            completion(result)
+        }
+
+        // Overall watchdog.
+        //
+        // `NWConnection` normally reports a failure within its own connect
+        // timeout, but "normally" is not good enough here: a connection object
+        // that never leaves `.setup` would leave this call outstanding for ever,
+        // which inside the tunnel means a leaked flow that never releases its
+        // slot. A hard deadline makes "always completes exactly once" a property
+        // of this function rather than a hope.
+        let overallDeadline = connectTimeout + handshakeTimeout + 5
+        let work = DispatchWorkItem {
+            log?.warning("proxy", "connect attempt exceeded its \(Int(overallDeadline))s deadline; giving up")
+            finish(.failure(.connectionTimeout))
+        }
+        watchdog = work
+        queue.asyncAfter(deadline: .now() + overallDeadline, execute: work)
 
         func attemptNext() {
+            guard !hasCompleted else { return }
             guard !remaining.isEmpty else {
                 log?.warning("proxy", "all \(attempts.count) candidate address(es) failed: \(attempts.joined(separator: ", "))")
-                completion(.failure(lastError))
+                finish(.failure(lastError))
                 return
             }
             let target = remaining.removeFirst()
@@ -118,6 +146,10 @@ public enum ProxyConnector {
 
             let dialStart = Date()
             stream.open(queue: queue) { result in
+                guard !hasCompleted else {
+                    stream.close()
+                    return
+                }
                 switch result {
                 case .failure(let error):
                     lastError = mapStreamError(error, endpoint: endpoint)
@@ -138,10 +170,14 @@ public enum ProxyConnector {
                         timeout: handshakeTimeout,
                         log: log
                     ) { handshakeResult in
+                        guard !hasCompleted else {
+                            stream.close()
+                            return
+                        }
                         switch handshakeResult {
                         case .success(let outcome):
                             let handshakeDuration = Date().timeIntervalSince(handshakeStart)
-                            completion(.success(ProxyConnection(
+                            finish(.success(ProxyConnection(
                                 stream: stream,
                                 endpoint: endpoint,
                                 destination: destination,
@@ -155,7 +191,7 @@ public enum ProxyConnector {
                             lastError = error
                             if isTerminal(error) {
                                 log?.warning("proxy", "handshake failed terminally (\(error.diagnosticDescription)); not trying other addresses")
-                                completion(.failure(error))
+                                finish(.failure(error))
                             } else {
                                 log?.debug("proxy", "handshake against \(target.host) failed: \(error.diagnosticDescription)")
                                 attemptNext()
