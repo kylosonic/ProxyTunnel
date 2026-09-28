@@ -11,7 +11,7 @@ slow or stuck batch cannot hide the other's result.
 
 | Batch | Contents | Status in CI |
 |---|---|---|
-| **Logic** | Validation, models, codecs, profile and settings storage, Keychain error mapping | 147 tests, all passing |
+| **Logic** | Validation, models, codecs, profile and settings storage, Keychain error mapping, proxy import | 195 tests, all passing |
 | **Integration** | TCP state machine, tunnel engine, live SOCKS5 and HTTP CONNECT proxies, Keychain | 61 passing, **7 skipped** (see below) |
 
 **The 7 skipped tests are the Keychain round-trip tests.** iOS derives an app's
@@ -262,6 +262,33 @@ oversights:
 
 ---
 
+### Proxy import — `ProxyImportParserTests.swift`
+
+The importer's header comment is a promise to the user, so every line of the
+format list it advertises has a test: scheme URLs (including `socks5h`, `socks`,
+percent-encoded credentials and bracketed IPv6), `user:pass@host:port`,
+`host:port@user:pass`, `host:port:user:pass`, `user:pass:host:port`, bare
+`host:port`, whitespace / tab / comma / semicolon separated, `key=value` and
+`key:value:key:value`, JSON objects, JSON arrays, `{"proxies":[…]}`, and a
+`Label | spec` prefix.
+
+Beyond the happy paths, three properties are pinned down:
+
+* **Ambiguity is disclosed, not hidden.** `a:b:c:d` has two readings. The scoring
+  prefers the stronger host — an IP literal over a dotted name over a single label
+  — and where two readings genuinely tie, the entry is flagged. A test asserts
+  both that the right reading wins when the hosts differ in strength, and that a
+  true tie is reported. That second test found a real flaw: the tie-break
+  preference was being compared as part of the tie detection, so a tie could never
+  be reported.
+* **A successful parse is storable.** Every accepted line is fed through the same
+  `ProfileValidator` the manual form uses, so the two entry points cannot drift.
+* **A password never survives into the displayed line**, checked for all seven
+  credential-bearing shapes, including the percent-encoded URL form. A line that
+  *fails* to parse is still masked, because it may contain a credential too.
+
+---
+
 ## Bugs this suite found
 
 Recorded because it is the argument for byte-level tests existing at all. Every
@@ -269,6 +296,7 @@ one of these was found here and fixed.
 
 | Bug | How it surfaced |
 |---|---|
+| **`ProxyImportParser` could never report an ambiguous line.** Selection scored `hostStrength * 10 + (host-first ? 1 : 0)` and the tie detection compared that same tie-broken score, so two readings differing only by the tie-break always looked unequal and the entry was presented as certain. Split into `structuralScore` (host strength alone, which decides ambiguity) and `score` (which breaks the tie) | `testGenuinelyTiedLineIsFlaggedAsAmbiguous` — the only one of 48 parser tests to fail on its first run |
 | **`ProxySession.Runner` and the DNS `LengthPrefixedReader` were deallocated mid-handshake.** Every stream callback captured `self` weakly so a stalled peer could not leak them — and nothing else retained them either, so `ProxySession.run()` returned and the object died with the greeting already sent. Every later completion found `self == nil`. **On a device this would have made every proxied connection hang until TCP gave up: the tunnel would have started, installed its routes, and carried nothing** | Every live-proxy test failed with "the connector never completed", and with no handshake timeout either — the timer belonged to the dead object, so only the connector's outer watchdog ever fired |
 | **`TCPSegment.serialized()` never reserved the two-byte checksum field**, so the header was 18 bytes instead of 20: every option and payload byte was shifted by two, and the checksum was written over the urgent pointer. `parse()` then skipped the checksum, so the two errors cancelled out in a simple round trip | `testRoundTripsAHeader` got `"llo"` instead of `"hello"`; the engine tests then failed en masse with `truncated: needed 28, have 26` |
 | **`SOCKS5.request()` appended the `ATYP` byte a second time**, inserting a stray byte and shifting the port by one. Every SOCKS5 `CONNECT` the client sent was malformed | `testConnectRequestWithIPv4` expected 10 bytes and got 11 |

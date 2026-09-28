@@ -493,6 +493,8 @@ It is a labelled development affordance, not a fake VPN.
 ├── Packages/ProxyTunnelCore/         All the logic, as a local Swift package
 │   └── Sources/ProxyTunnelCore/
 │       ├── Models/                   ProxyProfile, ProxyCredential, failures, state
+│       ├── Import/                   Paste parsing: every provider format, plus the
+│       │                             scoring that resolves an ambiguous line
 │       ├── Proxy/                    SOCKS5, HTTP CONNECT, transport, probe, resolver
 │       ├── Tunnel/                   Userspace TCP/IP stack, engine, DNS, UDP relay
 │       ├── Validation/               Host, port, profile and DNS validation
@@ -503,7 +505,8 @@ It is a labelled development affordance, not a fake VPN.
 ├── Sources/ProxyTunnelApp/           SwiftUI app
 ├── Sources/ProxyTunnelExtension/     NEPacketTunnelProvider
 ├── Tests/ProxyTunnelCoreTests/       Unit + loopback integration tests
-├── Scripts/                          XcodeGen install, IPA packaging and validation
+├── Scripts/                          XcodeGen install, IPA packaging, IPA validation,
+│                                     a pre-flight bracket check for Swift files
 ├── docs/                             Architecture, entitlements, protocols, testing
 └── project.yml                       XcodeGen spec — the .xcodeproj is generated
 ```
@@ -578,12 +581,12 @@ signing later.
 
 ## Testing
 
-215 tests, split into two batches in CI so that a slow one cannot hide the other's
-result: **208 pass, 7 skip.**
+263 tests, split into two batches in CI so that a slow one cannot hide the other's
+result: **256 pass, 7 skip.**
 
 | Batch | Contents | Result |
 |---|---|---|
-| Logic | Validation, models, codecs, storage | **147 passing** |
+| Logic | Validation, models, codecs, storage, proxy import | **195 passing** |
 | Integration | TCP state machine, tunnel engine, live proxies, Keychain | **61 passing, 7 skipped** |
 
 The **live-proxy tests really do run in CI**: a SOCKS5 server and an HTTP CONNECT
