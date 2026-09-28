@@ -288,6 +288,33 @@ Traffic exited via 198.51.100.4
 That last line is your proxy's egress address, served by the origin server. It is
 not simulated.
 
+#### Exporting a proxy to a client that can run a tunnel
+
+**Row menu ▸ Export / share…** renders a saved profile in a shape another app
+accepts. On a build signed without the Network Extension entitlement this is the
+practical way to get device-wide proxying: install a proxy client whose developer
+*does* hold the entitlement — [Hiddify](https://apps.apple.com/ca/app/hiddify-proxy-vpn/id6596777532)
+(free), [Shadowrocket](https://apps.apple.com/gh/app/shadowrocket/id932747118),
+sing-box, Stash and similar — and paste your proxy into it.
+
+| Format | For |
+|---|---|
+| **Share link** | `socks5://user:pass@host:1080#Name`. Every client's Add/Import box takes one of these |
+| **Outbound block (JSON)** | The single outbound object sing-box, Stash and Loon expect you to add to a config |
+| **Plain fields** | Labelled values, for a client that only offers a form |
+
+A *complete* client configuration is deliberately not generated. Its schema has
+changed between sing-box releases (`inet4_address` → `address`, `sniff: true` →
+a route action, `"outbound": "dns-out"` → `hijack-dns`), and the apps that embed
+it layer their own format on top — so a generated full config would look
+authoritative and be wrong for somebody's version. The outbound block and the
+share link are the parts that have stayed stable.
+
+The exported text contains the password in plain text, because that is the whole
+point; the screen says so, and copying it puts the password on the system
+clipboard where other apps and clipboard-history features can read it. One toggle
+drops the password, and the export is never written to the log.
+
 ### Settings tab
 
 * **Connect on launch**
