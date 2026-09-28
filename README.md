@@ -19,8 +19,8 @@ because of an Apple licensing rule. To be precise about it:
 
 | # | Milestone | Status |
 |---|---|---|
-| **A** | The Swift source compiles cleanly for iOS | ✅ Verified — see the Actions badge |
-| **B** | An unsigned `ProxyTunnel.ipa` is produced | ✅ Verified — see the Actions badge |
+| **A** | The Swift source compiles cleanly for iOS | ✅ **Verified** — both targets build unsigned on a GitHub macOS runner (Xcode 16.4) |
+| **B** | An unsigned `ProxyTunnel.ipa` is produced | ✅ **Verified** — 1.8 MiB, arm64, validated structurally by [`Scripts/validate-ipa.sh`](Scripts/validate-ipa.sh) in CI and again independently; SHA-256 recorded as an artifact |
 | **C** | Sideloadly signs it with a free Apple ID and installs it | ⚠️ Expected to work; **not verified by me** — I have no iPhone or Mac to test on |
 | **D** | The packet tunnel extension is allowed to start on the iPhone | ❌ **Will fail.** `com.apple.developer.networking.networkextension` cannot be provisioned with a free Apple ID |
 | **E** | Traffic is actually routed through your proxy | ❌ Fails for the same reason as D — *inside the tunnel*. The app's built-in connectivity test does prove the proxy itself works, under any signing method |
@@ -543,8 +543,8 @@ signing later.
 
 ## Testing
 
-208 tests, split into two batches in CI so that a slow one cannot hide the other's
-result:
+215 tests, split into two batches in CI so that a slow one cannot hide the other's
+result: **208 pass, 7 skip.**
 
 | Batch | Contents | Result |
 |---|---|---|
