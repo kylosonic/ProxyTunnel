@@ -10,6 +10,7 @@ struct ProxyListView: View {
 
     @EnvironmentObject private var environment: AppEnvironment
     @State private var editingProfile: ProxyProfile?
+    @State private var exportingProfile: ProxyProfile?
     @State private var isAddingNew = false
     @State private var isPasting = false
     @State private var pendingDeletion: ProxyProfile?
@@ -54,6 +55,10 @@ struct ProxyListView: View {
             }
             .sheet(item: $editingProfile) { profile in
                 ProxyEditView(mode: .edit(profile))
+                    .environmentObject(environment)
+            }
+            .sheet(item: $exportingProfile) { profile in
+                ProxyExportView(profile: profile)
                     .environmentObject(environment)
             }
             .confirmationDialog(
@@ -205,6 +210,11 @@ struct ProxyListView: View {
                             get: { profile.isEnabled },
                             set: { try? environment.profileStore.setEnabled($0, for: profile.id) }
                         ))
+                        Button {
+                            exportingProfile = profile
+                        } label: {
+                            Label("Export / share…", systemImage: "square.and.arrow.up")
+                        }
                         Button(role: .destructive) {
                             pendingDeletion = profile
                         } label: {

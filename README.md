@@ -493,8 +493,8 @@ It is a labelled development affordance, not a fake VPN.
 ├── Packages/ProxyTunnelCore/         All the logic, as a local Swift package
 │   └── Sources/ProxyTunnelCore/
 │       ├── Models/                   ProxyProfile, ProxyCredential, failures, state
-│       ├── Import/                   Paste parsing: every provider format, plus the
-│       │                             scoring that resolves an ambiguous line
+│       ├── Import/                   Interchange: paste parsing for every provider
+│       │                             format, and export for other proxy clients
 │       ├── Proxy/                    SOCKS5, HTTP CONNECT, transport, probe, resolver
 │       ├── Tunnel/                   Userspace TCP/IP stack, engine, DNS, UDP relay
 │       ├── Validation/               Host, port, profile and DNS validation
@@ -505,8 +505,7 @@ It is a labelled development affordance, not a fake VPN.
 ├── Sources/ProxyTunnelApp/           SwiftUI app
 ├── Sources/ProxyTunnelExtension/     NEPacketTunnelProvider
 ├── Tests/ProxyTunnelCoreTests/       Unit + loopback integration tests
-├── Scripts/                          XcodeGen install, IPA packaging, IPA validation,
-│                                     a pre-flight bracket check for Swift files
+├── Scripts/                          XcodeGen install, IPA packaging, IPA validation
 ├── docs/                             Architecture, entitlements, protocols, testing
 └── project.yml                       XcodeGen spec — the .xcodeproj is generated
 ```

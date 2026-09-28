@@ -333,6 +333,9 @@ extension ProxyImportParser {
         /// Tie-break preference: host-first readings win.
         var prefersHostFirst: Bool
         var isAmbiguous: Bool = false
+        /// A name carried by the line itself — a `Label | spec` prefix or a share
+        /// link's `#fragment`.
+        var name: String? = nil
 
         /// How well the host reads as a host, before any tie-break.
         ///
@@ -346,7 +349,7 @@ extension ProxyImportParser {
 
         func asCandidate() -> ProxyImportCandidate {
             ProxyImportCandidate(
-                name: nil,
+                name: name,
                 host: host,
                 port: port,
                 protocolType: protocolType,
@@ -448,7 +451,19 @@ extension ProxyImportParser {
         let scheme = String(text[text.startIndex..<separator.lowerBound]).lowercased()
         var rest = String(text[separator.upperBound...])
 
-        // Strip a path or query if one was pasted along with the URL.
+        // A share link puts a human-readable name in the fragment, so capture it
+        // before the path/query/fragment strip below removes it. This is what makes
+        // an exported link round-trip back to the same profile.
+        var fragmentName: String?
+        if let hash = rest.firstIndex(of: "#") {
+            let fragment = String(rest[rest.index(after: hash)...])
+            let decoded = fragment.removingPercentEncoding ?? fragment
+            if !decoded.trimmingCharacters(in: .whitespaces).isEmpty {
+                fragmentName = decoded
+            }
+        }
+
+        // Strip a path, query or fragment if one was pasted along with the URL.
         if let cut = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
             rest = String(rest[rest.startIndex..<cut])
         }
@@ -519,7 +534,8 @@ extension ProxyImportParser {
             protocolWasExplicit: schemeProtocol != nil,
             notes: notes,
             shape: "\(scheme):// link",
-            prefersHostFirst: true
+            prefersHostFirst: true,
+            name: fragmentName
         ))
     }
 
