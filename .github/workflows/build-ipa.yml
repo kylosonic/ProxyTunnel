@@ -236,7 +236,7 @@ jobs:
       # and is where a slow or stuck test would live. Running them separately means
       # a hang in B still leaves A's result, and the failure points at a cause
       # rather than at "the tests".
-      - name: Run the test suite (logic: validation, models, codecs, storage)
+      - name: "Run the test suite (logic — validation, models, codecs, storage)"
         id: tests_logic
         if: always() && env.RUN_TESTS == 'true'
         timeout-minutes: 20
