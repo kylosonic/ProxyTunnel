@@ -334,11 +334,15 @@ extension ProxyImportParser {
         var prefersHostFirst: Bool
         var isAmbiguous: Bool = false
 
-        /// An IP literal is a much stronger signal than a single label, which is
-        /// what resolves `a:b:c:d` in practice.
-        var score: Int {
-            hostStrength(host) * 10 + (prefersHostFirst ? 1 : 0)
-        }
+        /// How well the host reads as a host, before any tie-break.
+        ///
+        /// This is what actually decides an ambiguous line: an IP literal beats a
+        /// dotted name, which beats a single label.
+        var structuralScore: Int { hostStrength(host) * 10 }
+
+        /// The ordering score, which adds the tie-break preference so that
+        /// `max(by:)` picks the host-first reading when nothing else separates them.
+        var score: Int { structuralScore + (prefersHostFirst ? 1 : 0) }
 
         func asCandidate() -> ProxyImportCandidate {
             ProxyImportCandidate(
@@ -409,7 +413,13 @@ extension ProxyImportParser {
 
         // Surface the ambiguity rather than hiding it: the entry says what was
         // assumed, so a wrong guess is visible before anything is saved.
-        let tied = interpretations.filter { $0.score == best.score && $0.shape != best.shape }
+        //
+        // The comparison is on `structuralScore`, not `score`: the tie-break
+        // preference is what *picked* the reading, so comparing the tie-broken
+        // score would mean a genuine tie could never be detected.
+        let tied = interpretations.filter {
+            $0.shape != best.shape && $0.structuralScore == best.structuralScore
+        }
         var chosen = best
         if !tied.isEmpty {
             chosen.isAmbiguous = true
