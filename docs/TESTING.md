@@ -11,7 +11,7 @@ slow or stuck batch cannot hide the other's result.
 
 | Batch | Contents | Status in CI |
 |---|---|---|
-| **Logic** | Validation, models, codecs, profile and settings storage, Keychain error mapping, proxy import | 195 tests, all passing |
+| **Logic** | Validation, models, codecs, profile and settings storage, Keychain error mapping, proxy import and export | 216 tests, all passing |
 | **Integration** | TCP state machine, tunnel engine, live SOCKS5 and HTTP CONNECT proxies, Keychain | 61 passing, **7 skipped** (see below) |
 
 **The 7 skipped tests are the Keychain round-trip tests.** iOS derives an app's
@@ -287,10 +287,29 @@ Beyond the happy paths, three properties are pinned down:
   credential-bearing shapes, including the percent-encoded URL form. A line that
   *fails* to parse is still masked, because it may contain a credential too.
 
+### Proxy export — `ProxyExportFormatterTests.swift`
+
+The exporter hands a credential to another app, so the tests are built around two
+questions: is the output *consumable*, and is the password absent when it was
+asked to be absent.
+
+The consumability check is a **round trip**: the exporter's share link is pushed
+back through the importer and the profile must come out identical, across six
+protocol/host/credential combinations including a percent-encoded password
+(`p@ss:w/rd`) and a bracketed IPv6 host. That pins the two halves of the
+interchange module to each other rather than to my idea of what the formats look
+like — and it is why the importer now reads a share link's `#fragment` as the
+profile name.
+
+The JSON outbound is parsed back with `JSONSerialization` in the tests, so a
+malformed block fails rather than merely looking wrong. `includePassword: false`
+is asserted to remove the password from **every** format, and the default is
+asserted to include it (an export without it does not work, which is the point;
+the UI is what warns).
+
 ---
 
 ## Bugs this suite found
-
 Recorded because it is the argument for byte-level tests existing at all. Every
 one of these was found here and fixed.
 

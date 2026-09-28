@@ -607,12 +607,12 @@ signing later.
 
 ## Testing
 
-263 tests, split into two batches in CI so that a slow one cannot hide the other's
-result: **256 pass, 7 skip.**
+284 tests, split into two batches in CI so that a slow one cannot hide the other's
+result: **277 pass, 7 skip.**
 
 | Batch | Contents | Result |
 |---|---|---|
-| Logic | Validation, models, codecs, storage, proxy import | **195 passing** |
+| Logic | Validation, models, codecs, storage, proxy import and export | **216 passing** |
 | Integration | TCP state machine, tunnel engine, live proxies, Keychain | **61 passing, 7 skipped** |
 
 The **live-proxy tests really do run in CI**: a SOCKS5 server and an HTTP CONNECT
