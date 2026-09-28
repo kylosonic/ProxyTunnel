@@ -224,7 +224,18 @@ final class TunnelEngineTests: XCTestCase {
         XCTAssertEqual(echoed.1.destinationPort, 49152)
         XCTAssertEqual(echoed.1.sourcePort, 443)
         XCTAssertEqual(socksServer.handshakesCompleted, 1)
-        XCTAssertEqual(engine.statistics.tcpBytesToProxy, payload.count)
+        XCTAssertEqual(engine.statistics.tcpConnectionsOpened, 1)
+
+        // The per-connection byte counters are folded into the tunnel totals when a
+        // connection *closes*, so while it is still open they are read from the
+        // per-connection diagnostics instead — which is exactly what the Diagnostics
+        // screen shows, so this also checks that path.
+        let diagnostics = engine.connectionDiagnostics()
+        XCTAssertEqual(diagnostics.count, 1)
+        XCTAssertTrue(
+            diagnostics.first?.contains("in=\(payload.count)B") ?? false,
+            "expected \(payload.count) bytes to have reached the proxy; got \(diagnostics)"
+        )
     }
 
     func testLoopbackDestinationIsRefusedWithAReset() throws {

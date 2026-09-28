@@ -543,25 +543,37 @@ signing later.
 
 ## Testing
 
-Around 130 tests, all of which run on the CI simulator:
+208 tests, split into two batches in CI so that a slow one cannot hide the other's
+result:
 
-| Area | What is covered |
-|---|---|
-| Validation | Host (IPv4/IPv6/hostname/scheme/credentials-in-host/IDN), port ranges and protocol/port mismatches, whole-profile validation, DNS server validation |
-| Models | Profile and `TunnelConfiguration` round-tripping, schema-version rejection, credential redaction, connection-state derivation |
-| Codecs | SOCKS5 (RFC 1928/1929) and HTTP CONNECT framing, byte-for-byte, including incomplete-message handling; Internet checksums against RFC 1071 vectors; IPv4/IPv6 packet parse and build; TCP and UDP headers |
-| Keychain | Real `Security` framework add/update/delete/read on the simulator |
-| Storage | Profile store persistence, secret separation, corruption recovery, missing-Keychain-item detection |
-| TCP state machine | Handshake, MSS/window-scale negotiation, in-order/duplicate/out-of-order data, retransmission and give-up, zero window, FIN/RST, proxy failure |
-| **End-to-end** | A real SOCKS5 server and a real HTTP CONNECT server started on loopback inside the test process; real authentication, real relay, real bytes |
-| **Tunnel engine** | SYN → SYN-ACK → data → echo → back out as TCP packets, through a real proxy; loopback refusal; fragmented/unsupported/malformed packet accounting; DNS-over-TCP through the proxy |
-| Failure modes | Refused connections, wrong password, missing credentials, GSSAPI-only servers, non-HTTP servers, proxies rejecting the target |
+| Batch | Contents | Result |
+|---|---|---|
+| Logic | Validation, models, codecs, storage | **147 passing** |
+| Integration | TCP state machine, tunnel engine, live proxies, Keychain | **61 passing, 7 skipped** |
 
-**What the tests do not prove.** They cannot show that the packet tunnel starts
-on a device — that needs the Network Extension entitlement, which a CI simulator
-does not enforce. They cannot validate behaviour against a real ProxyCheap
-endpoint, because that needs real credentials. And `docs/TESTING.md` lists the
-cases that are deliberately *not* covered.
+The **live-proxy tests really do run in CI**: a SOCKS5 server and an HTTP CONNECT
+server are started on loopback inside the test process, and the production client
+is driven against them — real handshakes, real credentials, real relayed bytes,
+and a full tunnel round trip that feeds a synthetic SYN into the engine and checks
+that the echoed payload comes back out as TCP packets.
+
+The 7 skipped tests are the Keychain round trips. iOS derives an app's keychain
+access group from its code signature, and a host-less test bundle on the Simulator
+has none, so those tests skip with the reason rather than fail. They run on a
+device or under Xcode with a signed test host.
+
+**The suite has already earned its keep.** It found, among others: a TCP header
+serialiser that omitted the checksum field and shifted every option and payload
+byte by two; a SOCKS5 CONNECT request with a duplicated address-type byte; and a
+proxy handshake object that was deallocated mid-flight because every callback
+captured it weakly — which on a device would have made the tunnel start, install
+its routes, and carry nothing. The full list is in
+[`docs/TESTING.md`](docs/TESTING.md#bugs-this-suite-found).
+
+**What the tests do not prove.** They cannot show that the packet tunnel starts on
+a device — that needs the Network Extension entitlement, which a CI simulator does
+not enforce. They cannot validate against a real provider endpoint, because that
+needs real credentials; only the app's **Test connection** button can do that.
 
 ---
 

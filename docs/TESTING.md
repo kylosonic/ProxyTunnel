@@ -4,11 +4,35 @@ What is tested, what is not, and why the difference matters.
 
 ---
 
+## Where the suite stands
+
+Two batches run in CI on an iOS Simulator, and the split is deliberate: it means a
+slow or stuck batch cannot hide the other's result.
+
+| Batch | Contents | Status in CI |
+|---|---|---|
+| **Logic** | Validation, models, codecs, profile and settings storage, Keychain error mapping | 147 tests, all passing |
+| **Integration** | TCP state machine, tunnel engine, live SOCKS5 and HTTP CONNECT proxies, Keychain | 61 passing, **7 skipped** (see below) |
+
+**The 7 skipped tests are the Keychain round-trip tests.** iOS derives an app's
+default keychain access group from its code signature (team identifier + bundle
+identifier). A host-less unit-test bundle on the Simulator has no such identity,
+so `SecItemAdd` returns `errSecMissingEntitlement` (-34018). That is a property of
+the test *process*, not of `KeychainSecretStore`, so those tests call `XCTSkip`
+with the reason rather than reporting a failure they cannot justify. They run on a
+device build, or from Xcode against a signed test host.
+
+Nothing else is skipped. In particular the live-proxy tests **do** run: a real
+SOCKS5 server and a real HTTP CONNECT server are started on loopback inside the
+test process, and the production client is driven against them.
+
+---
+
 ## Running the tests
 
-**In CI:** every push and every manual dispatch runs the full suite on an iOS
-simulator. Results are in the `ProxyTunnel-iOS-build-logs` artifact
-(`tests.txt` and `TestResults.xcresult`).
+**In CI:** every push and every manual dispatch runs both batches. Results are in
+the `ProxyTunnel-iOS-build-logs` artifact (`tests-logic.txt`,
+`tests-integration.txt`, and the two `.xcresult` bundles).
 
 **Locally, on a Mac:**
 
@@ -18,8 +42,7 @@ xcodebuild test \
   -project ProxyTunnel.xcodeproj \
   -scheme ProxyTunnelCoreTests \
   -configuration Debug \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
-  CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
 There is no `swift test` path. `ProxyTunnelCore` imports NetworkExtension,
@@ -227,6 +250,7 @@ oversights:
 
 | Gap | Why |
 |---|---|
+| `KeychainSecretStore` round trips | **Skipped in CI.** A host-less test bundle on the Simulator has no keychain access group (`errSecMissingEntitlement`, -34018). Runs on a device, or from Xcode against a signed test host |
 | `DNSTunnelResolver` over a real SOCKS5 UDP association | The test SOCKS5 server does not implement `UDP ASSOCIATE`. The DNS-over-TCP path *is* covered end to end, and the UDP relay's framing is covered at the codec level |
 | `SOCKS5UDPRelay` data path | Same reason. The class is exercised indirectly (the engine tries to establish a relay and falls back cleanly) but a full datagram round trip is not covered |
 | TLS (`HTTPS CONNECT`) against a real TLS proxy | Would need a certificate the test trusts. The TLS *configuration* (SNI, minimum version, no pinning) is asserted by reading the code path, not by handshaking |
@@ -235,6 +259,21 @@ oversights:
 | `TunnelController` against `NETunnelProviderManager` | Needs a device and an entitlement |
 | Everything in `PhysicalInterfaceResolver` | Needs a real network path |
 | IPv6 in the tunnel engine | The engine tests use IPv4 packets. The IPv6 code paths (header parse/build, extension-header walking, checksums) are covered at the codec level |
+
+---
+
+## Bugs this suite found
+
+Recorded because it is the argument for byte-level tests existing at all. Every
+one of these was found here and fixed.
+
+| Bug | How it surfaced |
+|---|---|
+| **`ProxySession.Runner` and the DNS `LengthPrefixedReader` were deallocated mid-handshake.** Every stream callback captured `self` weakly so a stalled peer could not leak them — and nothing else retained them either, so `ProxySession.run()` returned and the object died with the greeting already sent. Every later completion found `self == nil`. **On a device this would have made every proxied connection hang until TCP gave up: the tunnel would have started, installed its routes, and carried nothing** | Every live-proxy test failed with "the connector never completed", and with no handshake timeout either — the timer belonged to the dead object, so only the connector's outer watchdog ever fired |
+| **`TCPSegment.serialized()` never reserved the two-byte checksum field**, so the header was 18 bytes instead of 20: every option and payload byte was shifted by two, and the checksum was written over the urgent pointer. `parse()` then skipped the checksum, so the two errors cancelled out in a simple round trip | `testRoundTripsAHeader` got `"llo"` instead of `"hello"`; the engine tests then failed en masse with `truncated: needed 28, have 26` |
+| **`SOCKS5.request()` appended the `ATYP` byte a second time**, inserting a stray byte and shifting the port by one. Every SOCKS5 `CONNECT` the client sent was malformed | `testConnectRequestWithIPv4` expected 10 bytes and got 11 |
+| `LogRedactor`'s Authorization rule ran *after* the generic key/value rule, which consumed only the scheme word and left the credential in place | `testMasksProxyAuthorizationHeader` found the base64 blob still present |
+| The test SOCKS5 server's per-connection session was a local, so it accepted connections and never replied | The SOCKS5 integration tests could never have passed |
 
 ---
 
