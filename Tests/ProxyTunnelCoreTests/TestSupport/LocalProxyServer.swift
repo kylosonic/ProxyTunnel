@@ -19,39 +19,32 @@ import Network
 /// Counts and forwards bytes. Used as the origin server behind the proxy.
 final class LocalEchoServer {
 
-    private let listener: NWListener
+    private var listener: NWListener?
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "test.echo")
+
+    /// Whether the listener had to fall back to binding on every interface.
+    private(set) var isPinnedToLoopback = false
 
     /// What the "origin" sends back. If `nil`, bytes are echoed.
     var response: Data?
 
     init(response: Data? = nil) throws {
         self.response = response
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters, on: .any)
     }
 
     func start() throws -> UInt16 {
-        let semaphore = DispatchSemaphore(value: 0)
-        var boundPort: UInt16 = 0
-        listener.stateUpdateHandler = { state in
-            if case .ready = state {
-                boundPort = self.listener.port?.rawValue ?? 0
-                semaphore.signal()
+        let bound = try TestServerParameters.bind(queue: queue) { [weak self] listener in
+            listener.newConnectionHandler = { connection in
+                guard let self else { return }
+                self.connections.append(connection)
+                connection.start(queue: self.queue)
+                self.receiveLoop(connection)
             }
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            self.connections.append(connection)
-            connection.start(queue: self.queue)
-            self.receiveLoop(connection)
-        }
-        listener.start(queue: queue)
-        _ = semaphore.wait(timeout: .now() + 5)
-        guard boundPort != 0 else { throw TestServerError.couldNotBind }
-        return boundPort
+        listener = bound.listener
+        isPinnedToLoopback = bound.pinnedToLoopback
+        return bound.port
     }
 
     private func receiveLoop(_ connection: NWConnection) {
@@ -71,7 +64,8 @@ final class LocalEchoServer {
     }
 
     func stop() {
-        listener.cancel()
+        listener?.cancel()
+        listener = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
     }
@@ -81,6 +75,73 @@ enum TestServerError: Error {
     case couldNotBind
     case badHandshake(String)
     case timedOut
+}
+
+/// Shared listener plumbing for the test servers.
+enum TestServerParameters {
+
+    /// TCP parameters, optionally pinned to the **loopback endpoint**.
+    ///
+    /// Pinning matters in CI: a listener on "all interfaces" has to be registered
+    /// with the network control policy, which a host-less unit-test bundle on the
+    /// Simulator is not allowed to do (`setsockopt SO_NECP_LISTENUUID failed`), and
+    /// inbound connections to it are then dropped. A loopback-only listener avoids
+    /// that path — and the tests only ever connect over loopback anyway.
+    ///
+    /// The pin is a *preference*: `bind` falls back to every interface if it does
+    /// not come up, because a listener that binds but cannot accept is worse than
+    /// no listener at all only if we cannot tell the difference.
+    static func parameters(pinnedToLoopback: Bool) -> NWParameters {
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        if pinnedToLoopback {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        }
+        return parameters
+    }
+
+    /// Creates, configures and starts a listener, preferring loopback.
+    ///
+    /// - Returns: the listener, its bound port, and whether it is loopback-pinned.
+    static func bind(
+        queue: DispatchQueue,
+        timeout: TimeInterval = 4,
+        configure: (NWListener) -> Void
+    ) throws -> (listener: NWListener, port: UInt16, pinnedToLoopback: Bool) {
+
+        for pinned in [true, false] {
+            guard let listener = try? NWListener(using: parameters(pinnedToLoopback: pinned), on: .any) else {
+                continue
+            }
+            configure(listener)
+            if let port = waitForReady(listener, queue: queue, timeout: timeout), port != 0 {
+                return (listener, port, pinned)
+            }
+            listener.stateUpdateHandler = nil
+            listener.cancel()
+        }
+        throw TestServerError.couldNotBind
+    }
+
+    /// Starts the listener and waits for `.ready`.
+    static func waitForReady(_ listener: NWListener, queue: DispatchQueue, timeout: TimeInterval) -> UInt16? {
+        let semaphore = DispatchSemaphore(value: 0)
+        var boundPort: UInt16 = 0
+        listener.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                boundPort = listener.port?.rawValue ?? 0
+                semaphore.signal()
+            case .failed, .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+        listener.start(queue: queue)
+        _ = semaphore.wait(timeout: .now() + timeout)
+        return boundPort == 0 ? nil : boundPort
+    }
 }
 
 /// A SOCKS5 proxy that really relays to the requested destination.
@@ -106,45 +167,38 @@ final class LocalSOCKS5Server {
     /// still connects to a server on loopback.
     var redirectAllConnectionsTo: (host: String, port: UInt16)?
 
-    private let listener: NWListener
+    private var listener: NWListener?
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "test.socks5")
+
+    /// Whether the listener had to fall back to binding on every interface.
+    private(set) var isPinnedToLoopback = false
 
     /// Counters so tests can assert on what the server actually saw.
     private(set) var handshakesCompleted = 0
     private(set) var authenticationFailures = 0
     private(set) var requestedDestinations: [String] = []
 
-    init() throws {
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters, on: .any)
-    }
+    init() throws {}
 
     func start() throws -> UInt16 {
-        let semaphore = DispatchSemaphore(value: 0)
-        var boundPort: UInt16 = 0
-        listener.stateUpdateHandler = { state in
-            if case .ready = state {
-                boundPort = self.listener.port?.rawValue ?? 0
-                semaphore.signal()
+        let bound = try TestServerParameters.bind(queue: queue) { [weak self] listener in
+            listener.newConnectionHandler = { connection in
+                guard let self else { return }
+                self.connections.append(connection)
+                connection.start(queue: self.queue)
+                let session = SOCKS5ServerSession(server: self, connection: connection)
+                session.begin()
             }
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            self.connections.append(connection)
-            connection.start(queue: self.queue)
-            let session = SOCKS5ServerSession(server: self, connection: connection)
-            session.begin()
-        }
-        listener.start(queue: queue)
-        _ = semaphore.wait(timeout: .now() + 5)
-        guard boundPort != 0 else { throw TestServerError.couldNotBind }
-        return boundPort
+        listener = bound.listener
+        isPinnedToLoopback = bound.pinnedToLoopback
+        return bound.port
     }
 
     func stop() {
-        listener.cancel()
+        listener?.cancel()
+        listener = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
     }
@@ -367,39 +421,31 @@ final class LocalHTTPConnectServer {
     /// See `LocalSOCKS5Server.redirectAllConnectionsTo`.
     var redirectAllConnectionsTo: (host: String, port: UInt16)?
 
-    private let listener: NWListener
+    private var listener: NWListener?
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "test.httpconnect")
+
+    /// Whether the listener had to fall back to binding on every interface.
+    private(set) var isPinnedToLoopback = false
 
     private(set) var handshakesCompleted = 0
     private(set) var requestedAuthorities: [String] = []
     private(set) var lastProxyAuthorizationHeader: String?
 
-    init() throws {
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters, on: .any)
-    }
+    init() throws {}
 
     func start() throws -> UInt16 {
-        let semaphore = DispatchSemaphore(value: 0)
-        var boundPort: UInt16 = 0
-        listener.stateUpdateHandler = { state in
-            if case .ready = state {
-                boundPort = self.listener.port?.rawValue ?? 0
-                semaphore.signal()
+        let bound = try TestServerParameters.bind(queue: queue) { [weak self] listener in
+            listener.newConnectionHandler = { connection in
+                guard let self else { return }
+                self.connections.append(connection)
+                connection.start(queue: self.queue)
+                self.readHead(connection, buffer: Data())
             }
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            self.connections.append(connection)
-            connection.start(queue: self.queue)
-            self.readHead(connection, buffer: Data())
-        }
-        listener.start(queue: queue)
-        _ = semaphore.wait(timeout: .now() + 5)
-        guard boundPort != 0 else { throw TestServerError.couldNotBind }
-        return boundPort
+        listener = bound.listener
+        isPinnedToLoopback = bound.pinnedToLoopback
+        return bound.port
     }
 
     private func readHead(_ connection: NWConnection, buffer: Data) {
@@ -516,7 +562,8 @@ final class LocalHTTPConnectServer {
     }
 
     func stop() {
-        listener.cancel()
+        listener?.cancel()
+        listener = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
     }

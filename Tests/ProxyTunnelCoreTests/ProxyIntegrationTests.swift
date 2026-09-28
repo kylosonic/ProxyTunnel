@@ -40,6 +40,12 @@ final class ProxyIntegrationTests: XCTestCase {
 
         httpServer = try LocalHTTPConnectServer()
         httpPort = try httpServer.start()
+
+        // These tests are only meaningful if the process can actually accept an
+        // inbound loopback connection. Skip — loudly, with the reason — rather than
+        // fail with connection timeouts that say nothing about the code.
+        print("[ProxyTunnelTests] test servers bound: echo=\(echoPort) (loopback-pinned: \(echoServer.isPinnedToLoopback)), socks5=\(socksPort), http=\(httpPort)")
+        try LoopbackRequirement.require(port: echoPort)
     }
 
     override func tearDownWithError() throws {

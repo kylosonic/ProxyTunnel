@@ -42,6 +42,11 @@ final class TunnelEngineTests: XCTestCase {
         socksServer = try LocalSOCKS5Server()
         socksPort = try socksServer.start()
         flow = ScriptedPacketFlow()
+
+        // The engine tests dial a real proxy, so they need the same capability the
+        // integration tests do. See LoopbackRequirement.
+        print("[ProxyTunnelTests] engine test servers bound: socks5=\(socksPort) (loopback-pinned: \(socksServer.isPinnedToLoopback)), echo=\(echoPort)")
+        try LoopbackRequirement.require(port: socksPort)
     }
 
     override func tearDownWithError() throws {

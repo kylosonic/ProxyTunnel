@@ -19,10 +19,36 @@ final class KeychainSecretStoreTests: XCTestCase {
     private var store: KeychainSecretStore!
     private let service = "io.github.kylosonic.proxytunnel.tests.\(UUID().uuidString)"
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         store = KeychainSecretStore(service: service)
+
+        // An iOS process with no keychain access group cannot use the Keychain at
+        // all: the default group is derived from the code signature, and a
+        // host-less unit-test bundle signed ad-hoc on the Simulator has none. That
+        // is a property of the test process, not of `KeychainSecretStore`, so skip
+        // with the reason instead of reporting a failure that means nothing.
+        do {
+            try store.setSecret("availability-probe", for: "availability-probe")
+            try store.deleteSecret(for: "availability-probe")
+        } catch let error as SecretStoreError where error.isEntitlementProblem {
+            throw XCTSkip("""
+            The Keychain is unavailable to this test process: \(error)
+
+            \(KeychainSecretStoreTests.unavailabilityExplanation)
+            """)
+        } catch {
+            throw XCTSkip("The Keychain is unavailable to this test process (\(error)).\n\n\(KeychainSecretStoreTests.unavailabilityExplanation)")
+        }
     }
+
+    static let unavailabilityExplanation = """
+    iOS derives an app's default keychain access group from its code signature \
+    (team identifier + bundle identifier). A host-less XCTest bundle has no such \
+    identity, so SecItemAdd returns errSecMissingEntitlement (-34018). To exercise \
+    these tests, run them from Xcode against a signed test host, or on a device \
+    build. See docs/TESTING.md.
+    """
 
     override func tearDown() {
         if let keys = try? store.allKeys() {
@@ -73,6 +99,13 @@ final class KeychainSecretStoreTests: XCTestCase {
                        "an explicit access group needs a keychain-access-groups entitlement that a free-Apple-ID build does not have")
     }
 
+}
+
+/// Error-mapping tests for the Keychain store. These need no Keychain access
+/// themselves, so they live outside `KeychainSecretStoreTests` and still run when
+/// that class is skipped.
+final class KeychainErrorMappingTests: XCTestCase {
+
     func testStatusMessagesAreHumanReadable() {
         XCTAssertFalse(KeychainSecretStore.message(for: errSecItemNotFound).isEmpty)
         // `SecCopyErrorMessageString` returns a generic "OSStatus N" string for
@@ -81,6 +114,18 @@ final class KeychainSecretStoreTests: XCTestCase {
         let unknown = KeychainSecretStore.message(for: -99999)
         XCTAssertFalse(unknown.isEmpty)
         XCTAssertTrue(unknown.contains("99999") || unknown == "unknown", unknown)
+    }
+
+    func testEntitlementErrorsAreRecognised() {
+        XCTAssertTrue(SecretStoreError.missingEntitlement(errSecMissingEntitlement).isEntitlementProblem)
+        XCTAssertTrue(SecretStoreError.unavailable.isEntitlementProblem)
+        XCTAssertFalse(SecretStoreError.corruptedValue.isEntitlementProblem)
+        XCTAssertFalse(SecretStoreError.unexpectedStatus(-1).isEntitlementProblem)
+    }
+
+    func testErrorDescriptionsAreActionable() {
+        let message = SecretStoreError.missingEntitlement(errSecMissingEntitlement).description
+        XCTAssertTrue(message.contains("keychain-access-groups"), message)
     }
 }
 
