@@ -27,11 +27,27 @@ final class InternetChecksumTests: XCTestCase {
     }
 
     func testVerifyingAChecksummedBlockYieldsAllOnes() {
-        var bytes: [UInt8] = Array("the quick brown fox".utf8)
+        // The identity "sum(block + its checksum) == 0xFFFF" holds when the total
+        // number of bytes is even: an odd-length block gets a zero pad on the final
+        // word, which breaks it. Twenty bytes keeps it even after the two checksum
+        // bytes are appended.
+        var bytes: [UInt8] = Array("the quick brown fox!".utf8)
+        XCTAssertEqual(bytes.count % 2, 0, "the property needs an even-length block")
         let checksum = InternetChecksum.checksum(bytes)
         bytes.append(UInt8(checksum >> 8))
         bytes.append(UInt8(checksum & 0xFF))
         XCTAssertEqual(InternetChecksum.fold(InternetChecksum.sum(bytes)), 0xFFFF)
+    }
+
+    func testOddLengthBlocksArePaddedWithZero() {
+        // Documenting the limitation above explicitly, so nobody "fixes" the
+        // even-length requirement by changing the algorithm.
+        var bytes: [UInt8] = Array("the quick brown fox".utf8)
+        XCTAssertEqual(bytes.count % 2, 1)
+        let checksum = InternetChecksum.checksum(bytes)
+        bytes.append(UInt8(checksum >> 8))
+        bytes.append(UInt8(checksum & 0xFF))
+        XCTAssertNotEqual(InternetChecksum.fold(InternetChecksum.sum(bytes)), 0xFFFF)
     }
 }
 
@@ -232,7 +248,36 @@ final class TCPSegmentTests: XCTestCase {
         let raw = segment.serialized(source: source, destination: source)
         let dataOffset = Int((raw[12] >> 4) & 0x0F)
         XCTAssertEqual(dataOffset, 6, "5 words of header + 1 word of padded options")
-        XCTAssertEqual(raw.count, 24)
+        XCTAssertEqual(raw.count, 24, "20 bytes of header + 4 bytes of padded options")
+    }
+
+    func testHeaderIsTwentyBytesWithNoOptions() throws {
+        let segment = TCPSegment(
+            sourcePort: 1, destinationPort: 2,
+            sequenceNumber: 0, acknowledgmentNumber: 0,
+            flags: [.ack], windowSize: 0
+        )
+        let source = IPAddress(presentationName: "10.0.0.1")!
+        let raw = segment.serialized(source: source, destination: source)
+        XCTAssertEqual(raw.count, 20)
+        XCTAssertEqual(Int((raw[12] >> 4) & 0x0F), 5)
+    }
+
+    func testChecksumFieldIsNotWrittenOverTheUrgentPointer() throws {
+        // The checksum occupies bytes 16-17 and the urgent pointer 18-19. Getting
+        // that order wrong silently corrupts both, so pin it down.
+        let segment = TCPSegment(
+            sourcePort: 1, destinationPort: 2,
+            sequenceNumber: 0, acknowledgmentNumber: 0,
+            flags: [.ack], windowSize: 0,
+            urgentPointer: 0xBEEF
+        )
+        let source = IPAddress(presentationName: "10.0.0.1")!
+        let raw = segment.serialized(source: source, destination: source)
+        XCTAssertEqual(raw[18], 0xBE, "urgent pointer high byte")
+        XCTAssertEqual(raw[19], 0xEF, "urgent pointer low byte")
+        let parsed = try TCPSegment.parse(raw)
+        XCTAssertEqual(parsed.urgentPointer, 0xBEEF)
     }
 
     func testSequenceNumberAfterPayloadAccountsForSynAndFin() {

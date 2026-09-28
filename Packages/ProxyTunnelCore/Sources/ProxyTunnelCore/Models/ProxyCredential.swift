@@ -70,14 +70,18 @@ public enum LogRedactor {
     }
 
     /// Patterns that are scrubbed out of any message before it is persisted.
-    /// Order matters: more specific patterns first.
+    /// Order matters: the first match wins, and a rule that consumes part of a
+    /// line can prevent a later rule from matching the rest of it. The
+    /// header-shaped rules therefore come first, and they consume the whole value.
     private static let rules: [(pattern: String, replacement: String)] = [
+        // "Authorization: Basic <blob>" / "Proxy-Authorization: <blob>".
+        // Must run before the generic key/value rule below, which would otherwise
+        // replace only the scheme word and leave the credential in place.
+        (#"(?i)\b((?:proxy-)?authorization)\s*:\s*[^\r\n]*"#, "$1: " + mask),
         // proxy-user:proxy-pass@host   (also matches http://user:pass@host)
         (#"(?<=//)[^/\s:@]+:[^/\s@]+(?=@)"#, mask),
         // Free-form "password=..." / "passwd: ..." / "token=..."
-        (#"(?i)\b(password|passwd|pwd|secret|token|apikey|api_key|authorization)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;&]+)"#, "$1=" + mask),
-        // HTTP Basic / other base64 auth blobs
-        (#"(?i)\b(Proxy-Authorization|Authorization)\s*:\s*\S+"#, "$1: " + mask),
+        (#"(?i)\b(password|passwd|pwd|secret|token|apikey|api_key)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;&]+)"#, "$1=" + mask),
         // SOCKS5 RFC1929 style verbose dumps
         (#"(?i)\b(username|user)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;&]+)"#, "$1=" + mask),
         // Long hex/base64 blobs that look like keys (>= 32 chars)

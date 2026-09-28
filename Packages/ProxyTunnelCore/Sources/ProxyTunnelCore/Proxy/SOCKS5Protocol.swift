@@ -184,7 +184,11 @@ public enum SOCKS5 {
         out.append(version)
         out.append(command.rawValue)
         out.append(reserved)
-        out.append(try encodeAddress(host: host, into: &out))
+        // `encodeAddress` appends ATYP and the address itself to `out` and returns
+        // the ATYP it used. Appending the return value as well would insert a
+        // stray byte and shift the port by one — which is exactly the bug the
+        // codec tests caught.
+        try encodeAddress(host: host, into: &out)
         out.appendUInt16(port)
         return out
     }

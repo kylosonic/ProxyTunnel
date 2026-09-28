@@ -157,6 +157,11 @@ public struct TCPSegment: Equatable, Sendable {
         let dataOffset = Int((offsetAndFlags >> 12) & 0x0F)
         let flags = TCPFlags(rawValue: UInt8(offsetAndFlags & 0x00FF))
         let windowSize = try reader.readUInt16()
+        // The checksum sits *between* the window and the urgent pointer, at bytes
+        // 16-17 of the header. Skipping it (rather than treating it as the urgent
+        // pointer) is what keeps the option and payload offsets correct; the
+        // codec tests caught this by round-tripping a segment with options.
+        _ = try reader.readUInt16()
         let urgentPointer = try reader.readUInt16()
 
         guard dataOffset >= 5 else { throw TCPSegmentError.badDataOffset(dataOffset) }
@@ -221,13 +226,19 @@ public struct TCPSegment: Equatable, Sendable {
         segment.append(flags.rawValue)
         segment.append(UInt8((windowSize >> 8) & 0xFF))
         segment.append(UInt8(windowSize & 0xFF))
+        // The checksum is bytes 16-17 and MUST be reserved here, before the urgent
+        // pointer. Omitting it makes the header two bytes short, which shifts every
+        // option and every payload byte and makes the checksum field land on the
+        // urgent pointer instead.
+        segment.append(0)
+        segment.append(0)
         segment.append(UInt8((urgentPointer >> 8) & 0xFF))
         segment.append(UInt8(urgentPointer & 0xFF))
         segment.append(contentsOf: paddedOptions)
         segment.append(contentsOf: payload)
 
-        // The checksum field is bytes 16-17; it is zero at this point because we
-        // never wrote anything there, which is what the checksum definition wants.
+        // The checksum field is zero at this point, which is what the checksum
+        // definition requires.
         let checksum = InternetChecksum.transportChecksum(
             source: source,
             destination: destination,

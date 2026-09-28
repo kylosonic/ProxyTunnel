@@ -75,7 +75,12 @@ final class KeychainSecretStoreTests: XCTestCase {
 
     func testStatusMessagesAreHumanReadable() {
         XCTAssertFalse(KeychainSecretStore.message(for: errSecItemNotFound).isEmpty)
-        XCTAssertEqual(KeychainSecretStore.message(for: -99999), "unknown")
+        // `SecCopyErrorMessageString` returns a generic "OSStatus N" string for
+        // values it does not know, rather than nil, so assert on the shape rather
+        // than on an exact fallback.
+        let unknown = KeychainSecretStore.message(for: -99999)
+        XCTAssertFalse(unknown.isEmpty)
+        XCTAssertTrue(unknown.contains("99999") || unknown == "unknown", unknown)
     }
 }
 

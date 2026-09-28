@@ -86,19 +86,31 @@ public final class NWByteStream: DuplexByteStream {
         public let requiredInterface: NWInterface?
         /// Value passed to `NWProtocolTCP.Options.connectionTimeout`.
         public let connectTimeout: TimeInterval
+        /// Give up on a single `read` after this long. `nil` means wait
+        /// indefinitely, which is correct for a long-lived tunnel connection
+        /// where an idle peer is normal.
+        ///
+        /// The probe sets this. Without it, a proxy that accepts a connection and
+        /// then goes silent blocks the read for ever: `NWConnection.receive` does
+        /// not call back until data arrives, the peer closes, or an error occurs,
+        /// and "none of the above" is a perfectly ordinary state for a broken
+        /// proxy.
+        public let readTimeout: TimeInterval?
 
         public init(
             host: String,
             port: UInt16,
             security: Security = .none,
             requiredInterface: NWInterface? = nil,
-            connectTimeout: TimeInterval = 15
+            connectTimeout: TimeInterval = 15,
+            readTimeout: TimeInterval? = nil
         ) {
             self.host = host
             self.port = port
             self.security = security
             self.requiredInterface = requiredInterface
             self.connectTimeout = connectTimeout
+            self.readTimeout = readTimeout
         }
     }
 
@@ -109,6 +121,8 @@ public final class NWByteStream: DuplexByteStream {
     private var didCompleteOpen = false
     private var isClosed = false
     private var readOutstanding = false
+    private var readTimeoutWork: DispatchWorkItem?
+    private var readCompletion: ((Result<Data, Error>) -> Void)?
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -228,28 +242,50 @@ public final class NWByteStream: DuplexByteStream {
             return
         }
         readOutstanding = true
+        readCompletion = completion
 
+        if let timeout = configuration.readTimeout, let queue {
+            let work = DispatchWorkItem { [weak self] in
+                self?.finishRead(.failure(ByteStreamError.timedOut))
+            }
+            readTimeoutWork = work
+            queue.asyncAfter(deadline: .now() + timeout, execute: work)
+        }
+
+        receiveNext()
+    }
+
+    /// Delivers a read result exactly once and clears the outstanding-read state.
+    private func finishRead(_ result: Result<Data, Error>) {
+        readTimeoutWork?.cancel()
+        readTimeoutWork = nil
+        guard let completion = readCompletion else { return }
+        readCompletion = nil
+        readOutstanding = false
+        completion(result)
+    }
+
+    private func receiveNext() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            self.readOutstanding = false
+            guard let self, self.readCompletion != nil else { return }
 
             if let error {
-                completion(.failure(ByteStreamError.transport(Self.describe(error))))
+                self.finishRead(.failure(ByteStreamError.transport(Self.describe(error))))
                 return
             }
             if let data, !data.isEmpty {
                 // Deliver the bytes first; the *next* read will report EOF, which
                 // is what the sequential handshake code expects.
-                completion(.success(data))
+                self.finishRead(.success(data))
                 return
             }
             if isComplete {
-                completion(.success(Data()))
+                self.finishRead(.success(Data()))
                 return
             }
             // No data, not complete: loop rather than returning an empty success,
             // which the callers would misread as EOF.
-            self.read(completion: completion)
+            self.receiveNext()
         }
     }
 
@@ -258,6 +294,8 @@ public final class NWByteStream: DuplexByteStream {
         isClosed = true
         connection.stateUpdateHandler = nil
         connection.cancel()
+        // Release any waiter rather than leaving it blocked for ever.
+        finishRead(.success(Data()))
     }
 
     // MARK: Helpers

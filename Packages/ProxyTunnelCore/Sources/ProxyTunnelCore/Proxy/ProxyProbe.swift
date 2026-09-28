@@ -348,6 +348,10 @@ public enum ProxyProbe {
                 queue: queue,
                 connectTimeout: timeout,
                 handshakeTimeout: timeout,
+                // A probe is one-shot work: if the proxy accepts the connection
+                // and then says nothing, that must surface as a timeout rather
+                // than blocking the read until the user gives up.
+                streamReadTimeout: timeout,
                 requiredInterface: requiredInterface,
                 log: log
             ) { result in

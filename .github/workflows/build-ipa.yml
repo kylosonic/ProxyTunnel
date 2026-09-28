@@ -180,7 +180,7 @@ jobs:
 
       - name: Locate build products
         id: products
-        if: steps.build_app.outcome == 'success'
+        if: always() && steps.build_app.outcome == 'success'
         run: |
           set -euo pipefail
           BUILT_DIR="build/DerivedData/Build/Products/${BUILD_CONFIGURATION}-iphoneos"
@@ -236,6 +236,19 @@ jobs:
       # and is where a slow or stuck test would live. Running them separately means
       # a hang in B still leaves A's result, and the failure points at a cause
       # rather than at "the tests".
+      # Signing is deliberately left ENABLED for the simulator test build, unlike
+      # the device builds above.
+      #
+      # A simulator build is signed ad-hoc with the "-" identity and gains the
+      # synthesized entitlements (`application-identifier`,
+      # `keychain-access-groups`, `get-task-allow`) that Xcode derives from the
+      # bundle identifier. Turning signing off removes them, and an iOS process
+      # with no entitlements at all cannot use the Keychain (OSStatus -34018) or
+      # accept inbound loopback connections — which is exactly what the Keychain
+      # tests and the local proxy servers need.
+      #
+      # No certificate, team or provisioning profile is involved: simulator
+      # signing does not consult a profile.
       - name: "Run the test suite (logic — validation, models, codecs, storage)"
         id: tests_logic
         if: always() && env.RUN_TESTS == 'true'
@@ -254,7 +267,10 @@ jobs:
             -skip-testing:ProxyTunnelCoreTests/TunnelEngineTests \
             -skip-testing:ProxyTunnelCoreTests/ProxyIntegrationTests \
             -skip-testing:ProxyTunnelCoreTests/KeychainSecretStoreTests \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
             BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
             2>&1 | tee artifacts/logs/tests-logic.txt
 
@@ -280,44 +296,20 @@ jobs:
             -only-testing:ProxyTunnelCoreTests/TCPConnectionTests \
             -only-testing:ProxyTunnelCoreTests/TunnelEngineTests \
             -only-testing:ProxyTunnelCoreTests/ProxyIntegrationTests \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
             BUNDLE_ID_BASE="$BUNDLE_ID_BASE" \
             2>&1 | tee artifacts/logs/tests-integration.txt
 
-      # Because the build and test steps above run with `if: always()` so that one
-      # run reports every error, their outcomes have to be turned back into a
-      # pass/fail for the whole job. `skipped` counts as fine (the test step is
-      # skipped when run_tests is false).
-      - name: Fail the run if any build or test step failed
-        if: always()
-        run: |
-          set -euo pipefail
-          echo "build_app         = ${{ steps.build_app.outcome }}"
-          echo "build_extension   = ${{ steps.build_extension.outcome }}"
-          echo "tests_logic       = ${{ steps.tests_logic.outcome }}"
-          echo "tests_integration = ${{ steps.tests_integration.outcome }}"
-
-          failed=0
-          for outcome in \
-            "${{ steps.build_app.outcome }}" \
-            "${{ steps.build_extension.outcome }}" \
-            "${{ steps.tests_logic.outcome }}" \
-            "${{ steps.tests_integration.outcome }}"; do
-            case "$outcome" in
-              success|skipped) ;;
-              *) failed=1 ;;
-            esac
-          done
-
-          if [[ "$failed" -ne 0 ]]; then
-            echo "::error::At least one build or test step failed. The full xcodebuild output is in the ProxyTunnel-iOS-build-logs artifact."
-            exit 1
-          fi
-          echo "All build and test steps succeeded."
-
+      # Artefacts are produced BEFORE the pass/fail gate below. A red build that
+      # still hands you the IPA and the logs is far more useful than a red build
+      # that produced nothing: the primary deliverable of this workflow is the
+      # artifact, and the tests are a quality signal on top of it.
       - name: Package the unsigned IPA
         id: package
-        if: steps.build_app.outcome == 'success'
+        if: always() && steps.build_app.outcome == 'success'
         run: |
           set -euo pipefail
           ./Scripts/make-ipa.sh "${{ steps.products.outputs.app_path }}" "$IPA_NAME" \
@@ -325,6 +317,7 @@ jobs:
           echo "ipa_path=$IPA_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Record the build provenance
+        if: always() && steps.package.outcome == 'success'
         run: |
           set -euo pipefail
           {
@@ -345,6 +338,8 @@ jobs:
           shasum -a 256 "artifacts/${IPA_NAME}" | tee artifacts/logs/sha256.txt
 
       - name: Validate the IPA
+        id: validate
+        if: always() && steps.package.outcome == 'success'
         run: |
           set -euo pipefail
           ./Scripts/validate-ipa.sh "$IPA_NAME" "$BUNDLE_ID_BASE" 2>&1 | tee artifacts/logs/validation.txt
@@ -371,7 +366,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the IPA
-        if: ${{ steps.package.outcome == 'success' }}
+        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ProxyTunnel-iOS-unsigned
@@ -391,6 +386,44 @@ jobs:
           path: artifacts/logs
           if-no-files-found: warn
           retention-days: 30
+
+      # The pass/fail gate comes last, on purpose.
+      #
+      # The build and test steps run with `if: always()` so that one run reports
+      # every error, and the packaging steps run before this, so a red run still
+      # hands you the IPA and the logs. `skipped` counts as fine: the test steps
+      # are skipped when the run_tests input is false, and the packaging steps are
+      # skipped when the build itself failed.
+      - name: Fail the run if any build, test or validation step failed
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "build_app         = ${{ steps.build_app.outcome }}"
+          echo "build_extension   = ${{ steps.build_extension.outcome }}"
+          echo "tests_logic       = ${{ steps.tests_logic.outcome }}"
+          echo "tests_integration = ${{ steps.tests_integration.outcome }}"
+          echo "package           = ${{ steps.package.outcome }}"
+          echo "validate          = ${{ steps.validate.outcome }}"
+
+          failed=0
+          for outcome in \
+            "${{ steps.build_app.outcome }}" \
+            "${{ steps.build_extension.outcome }}" \
+            "${{ steps.tests_logic.outcome }}" \
+            "${{ steps.tests_integration.outcome }}" \
+            "${{ steps.package.outcome }}" \
+            "${{ steps.validate.outcome }}"; do
+            case "$outcome" in
+              success|skipped) ;;
+              *) failed=1 ;;
+            esac
+          done
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "::error::At least one step failed. The full xcodebuild output is in the ProxyTunnel-iOS-build-logs artifact; any IPA that was produced is in ProxyTunnel-iOS-unsigned."
+            exit 1
+          fi
+          echo "Build, tests and IPA validation all succeeded."
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SIGNED BUILDS

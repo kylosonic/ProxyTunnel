@@ -85,6 +85,11 @@ public enum ProxyConnector {
         queue: DispatchQueue,
         connectTimeout: TimeInterval = 15,
         handshakeTimeout: TimeInterval = 20,
+        /// Bound each individual read on the connection. Leave `nil` for a
+        /// long-lived tunnel stream, where an idle peer is normal; set it for
+        /// one-shot work such as the connectivity probe, where a silent proxy must
+        /// not block for ever.
+        streamReadTimeout: TimeInterval? = nil,
         requiredInterface: NWInterface? = nil,
         log: DiagnosticLog? = nil,
         completion: @escaping (Result<ProxyConnection, ProxyError>) -> Void
@@ -141,7 +146,8 @@ public enum ProxyConnector {
                 port: target.port,
                 security: security,
                 requiredInterface: requiredInterface,
-                connectTimeout: connectTimeout
+                connectTimeout: connectTimeout,
+                readTimeout: streamReadTimeout
             ))
 
             let dialStart = Date()
