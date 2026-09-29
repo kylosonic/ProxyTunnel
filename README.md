@@ -1,14 +1,42 @@
 # ProxyTunnel
 
-An iOS app that routes your iPhone's traffic through a proxy you control, using a
-real Network Extension packet tunnel — plus an honest account of exactly what iOS
-will and will not let you do with it.
+Routes your device's traffic through a proxy you control, using a real OS-level
+packet tunnel — a `NEPacketTunnelProvider` on iOS, a `VpnService` on Android — plus
+an honest account of exactly what each platform will and will not let you do.
 
 [![Build iOS IPA](https://github.com/kylosonic/ProxyTunnel/actions/workflows/build-ipa.yml/badge.svg)](https://github.com/kylosonic/ProxyTunnel/actions/workflows/build-ipa.yml)
+[![Build Android APK](https://github.com/kylosonic/ProxyTunnel/actions/workflows/build-apk.yml/badge.svg)](https://github.com/kylosonic/ProxyTunnel/actions/workflows/build-apk.yml)
 
 ---
 
-## Read this first
+## Want a working VPN today? Use the Android app.
+
+The iOS side is complete and builds, but it cannot tunnel on a device signed with a
+free Apple ID: Apple gates `NEPacketTunnelProvider` behind the
+`com.apple.developer.networking.networkextension` entitlement, which only paid
+Developer Program members can provision. That is a licensing rule, not a bug, and
+this project does not try to work around it.
+
+**Android has no such gate.** `VpnService` needs one user consent dialog and
+nothing else — no account, no provisioning profile, no seven-day expiry, and it
+builds on a free Linux CI runner:
+
+```bash
+cd android
+./scripts/fetch-native-libs.sh
+gradle :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+The debug APK is signed with the Android SDK's throwaway debug key, which is a
+complete, installable signature. See **[android/README.md](android/README.md)** for
+what the tunnel actually does, how the credentials are stored, and the one place
+where Android is worse than iOS (the engine takes a config *file*, so the password
+reaches disk while the tunnel runs — mitigations are documented there).
+
+---
+
+## Read this first (iOS)
 
 This project was built around a specific workflow: a Windows machine, no Mac, no
 paid Apple Developer account, GitHub Actions producing an unsigned IPA, and
@@ -46,6 +74,8 @@ the source has to change — the tunnel is already implemented, not stubbed.
 
 ## Contents
 
+- [Want a working VPN today? Use the Android app.](#want-a-working-vpn-today-use-the-android-app)
+- [Read this first (iOS)](#read-this-first-ios)
 - [What this actually is](#what-this-actually-is)
 - [Quick start](#quick-start)
 - [Installing the unsigned IPA with Sideloadly](#installing-the-unsigned-ipa-with-sideloadly)
@@ -288,6 +318,39 @@ Traffic exited via 198.51.100.4
 That last line is your proxy's egress address, served by the origin server. It is
 not simulated.
 
+#### Picking a proxy by location
+
+Implemented in the **Android** app; the iOS app has the same importer and the same
+share-link format, but not yet the country field.
+
+A label like `ProxyCheap | US | New York` or a share-link fragment of
+`#nl-amsterdam-01` is scanned for a country name, a two-letter code in capitals, or
+a common city name, and that becomes the proxy's location. The location picker then
+filters and selects from the proxies you have stored.
+
+It deliberately searches **only your own list**. There is no endpoint discovery, no
+downloaded list, and no "find me a free proxy" — see the section below for why.
+
+#### Why there is no free-proxy search
+
+This feature was requested and declined. Free residential proxy lists are, in
+practice, one of three things: open proxies on strangers' machines (someone else's
+server, someone else's bill, not yours to route through), honeypots published so
+that traffic through them can be read and rewritten, or SDKs that pay for the
+"residential" pool by reselling other people's bandwidth. Putting a username and
+password through any of them is how accounts get stolen.
+
+What the app does instead is filter by location over a list you obtained
+legitimately. Good sources, in order of how well they work:
+
+* the proxy provider you already pay for — most sell SOCKS5 endpoints alongside
+  their VPN product;
+* a paid or trial residential plan from a vendor whose terms you have read;
+* a free tier from a datacentre-proxy vendor — datacentre IPs rather than
+  residential, but legitimate and often free at low volume;
+* your own machine: Tor's SOCKS port (`127.0.0.1:9050`), `ssh -D 1080 you@server`,
+  or a small VPS running `dante` or `3proxy`.
+
 #### Exporting a proxy to a client that can run a tunnel
 
 **Row menu ▸ Export / share…** renders a saved profile in a shape another app
@@ -511,7 +574,9 @@ It is a labelled development affordance, not a fake VPN.
 
 ```
 .
-├── .github/workflows/build-ipa.yml   CI: generate, build, test, package, validate
+├── .github/workflows/
+│   ├── build-ipa.yml                 iOS CI: generate, build, test, package, validate
+│   └── build-apk.yml                 Android CI: fetch engine, test, build, validate APK
 ├── Config/                           Info.plist and entitlements for both targets
 │   ├── ProxyTunnel-Info.plist
 │   ├── ProxyTunnel.entitlements
@@ -532,6 +597,14 @@ It is a labelled development affordance, not a fake VPN.
 ├── Sources/ProxyTunnelApp/           SwiftUI app
 ├── Sources/ProxyTunnelExtension/     NEPacketTunnelProvider
 ├── Tests/ProxyTunnelCoreTests/       Unit + loopback integration tests
+├── android/                          The Android app — see android/README.md
+│   ├── app/src/main/java/…/core/     Model, Validation, Regions, Interchange,
+│   │                                 SOCKS5 + CONNECT codecs, probe, engine config
+│   ├── app/src/main/java/…/data/     Keystore secret store, JSON profile store
+│   ├── app/src/main/java/…/vpn/      ProxyTunnelService (VpnService)
+│   ├── app/src/main/java/…/ui/       Compose screens, sheets, view model
+│   ├── app/src/test/                 JVM tests, incl. loopback proxy servers
+│   └── scripts/fetch-native-libs.sh  Pinned engine download + SHA-256 verification
 ├── Scripts/                          XcodeGen install, IPA packaging, IPA validation
 ├── docs/                             Architecture, entitlements, protocols, testing
 └── project.yml                       XcodeGen spec — the .xcodeproj is generated
@@ -607,21 +680,40 @@ signing later.
 
 ## Testing
 
-284 tests, split into two batches in CI so that a slow one cannot hide the other's
-result: **277 pass, 7 skip.**
+**441 tests across both platforms, 434 pass, 7 skip.**
+
+### iOS — 284 tests
+
+Split into two batches in CI so that a slow one cannot hide the other's result:
+**277 pass, 7 skip.**
 
 | Batch | Contents | Result |
 |---|---|---|
 | Logic | Validation, models, codecs, storage, proxy import and export | **216 passing** |
 | Integration | TCP state machine, tunnel engine, live proxies, Keychain | **61 passing, 7 skipped** |
 
-The **live-proxy tests really do run in CI**: a SOCKS5 server and an HTTP CONNECT
-server are started on loopback inside the test process, and the production client
-is driven against them — real handshakes, real credentials, real relayed bytes,
-and a full tunnel round trip that feeds a synthetic SYN into the engine and checks
-that the echoed payload comes back out as TCP packets.
+### Android — 157 tests
 
-The 7 skipped tests are the Keychain round trips. iOS derives an app's keychain
+Run on any JVM: `gradle :app:testDebugUnitTest`, no emulator and no device.
+
+| Suite | Contents | Result |
+|---|---|---|
+| `ValidationTest` | Host/port/sanitiser rules, redaction, and a reflection check that `ProxyProfile` has no field that could hold a password | **32 passing** |
+| `ImportAndShareLinkTest` | Every paste format, ambiguity detection, and share-link round trips including awkward passwords | **40 passing** |
+| `Socks5CodecTest` | SOCKS5 and RFC 1929 byte-for-byte | **19 passing** |
+| `HttpConnectCodecTest` | HTTP CONNECT request/response framing per RFC 9110 | **18 passing** |
+| `RegionsTest` | Location labels, including the two-letter-code trap | **18 passing** |
+| `HevConfigTest` | The generated engine YAML, including YAML injection attempts | **13 passing** |
+| `ProxyProbeIntegrationTest` | Real SOCKS5 and HTTP CONNECT servers on loopback, real relays | **17 passing** |
+
+The **live-proxy tests really do run in CI** on both platforms: a SOCKS5 server and
+an HTTP CONNECT server are started on loopback inside the test process, and the
+production client is driven against them — real handshakes, real credentials, real
+relayed bytes. On iOS there is additionally a full tunnel round trip that feeds a
+synthetic SYN into the engine and checks that the echoed payload comes back out as
+TCP packets.
+
+The 7 skipped tests are the iOS Keychain round trips. iOS derives an app's keychain
 access group from its code signature, and a host-less test bundle on the Simulator
 has none, so those tests skip with the reason rather than fail. They run on a
 device or under Xcode with a signed test host.
@@ -631,13 +723,18 @@ serialiser that omitted the checksum field and shifted every option and payload
 byte by two; a SOCKS5 CONNECT request with a duplicated address-type byte; and a
 proxy handshake object that was deallocated mid-flight because every callback
 captured it weakly — which on a device would have made the tunnel start, install
-its routes, and carry nothing. The full list is in
-[`docs/TESTING.md`](docs/TESTING.md#bugs-this-suite-found).
+its routes, and carry nothing. On the Android side it found a host validator that
+echoed an embedded password back into its own error message, a log-redaction rule
+that only matched credentials when a URL scheme preceded them, and a paste importer
+that could not read the `host = 1.2.3.4` form its own UI advertised. The full list
+is in [`docs/TESTING.md`](docs/TESTING.md#bugs-this-suite-found).
 
-**What the tests do not prove.** They cannot show that the packet tunnel starts on
-a device — that needs the Network Extension entitlement, which a CI simulator does
-not enforce. They cannot validate against a real provider endpoint, because that
-needs real credentials; only the app's **Test connection** button can do that.
+**What the tests do not prove.** They cannot show that the iOS packet tunnel starts
+on a device — that needs the Network Extension entitlement, which a CI simulator
+does not enforce. They cannot show that the Android tunnel carries traffic on a
+real phone either: that needs the VPN consent dialog accepted on real hardware.
+They cannot validate against a real provider endpoint, because that needs real
+credentials; only the app's **Test connection** button can do that.
 
 ---
 
@@ -687,6 +784,34 @@ Ordered roughly by how likely they are to matter.
     a packet tunnel — only for the legacy `NEVPNManager`/IKEv2 API. This project
     does not request it. Older advice saying "you need both" is stale.
 
+### Android-specific
+
+11. **The Android tunnel has not been run on a physical device.** It compiles, its
+    157-test suite is green including real loopback proxy relays, and the APK is
+    structurally validated — but there is no phone in the build environment, so
+    "works on your device" is not a claim this repository makes. See
+    [android/README.md](android/README.md#what-is-verified-and-what-is-not).
+
+12. **`minSdk` is 29** because the bundled `hev-socks5-tunnel` AAR says so. Android
+    9 and older cannot install the app. That restriction comes from the engine, not
+    from this project's code.
+
+13. **The Android tunnel upstream must be SOCKS5.** HTTP CONNECT and HTTPS CONNECT
+    are supported for the connection test and for export, but the engine cannot use
+    them as the tunnel. The Connect tab says this instead of failing obscurely.
+
+14. **On Android the password reaches disk while the tunnel runs**, because the
+    engine takes a config file path rather than a buffer. It is written to
+    app-private storage with owner-only permissions and deleted when the tunnel
+    stops. On iOS the password never leaves the Keychain. This asymmetry is real and
+    is documented rather than glossed over.
+
+15. **The debug APK is ~55 MiB.** It bundles four ABIs (one of which is the
+    `armeabi-v7a` library at 234 KiB and one the `x86` library for emulators) plus
+    unminified Compose. A release build with R8 would be far smaller; the debug
+    build is what is published because it is signed with a key anyone can produce
+    and therefore installs without a developer account.
+
 ---
 
 ## Documentation index
@@ -694,6 +819,7 @@ Ordered roughly by how likely they are to matter.
 | Document | Contents |
 |---|---|
 | [`docs/ENTITLEMENTS-AND-SIGNING.md`](docs/ENTITLEMENTS-AND-SIGNING.md) | **The important one.** Which entitlement is required, why a free Apple ID cannot provision it, what happens at runtime, what Sideloadly does and does not do, and what a paid account changes |
+| [`android/README.md`](android/README.md) | The Android app: why `hev-socks5-tunnel` rather than tun2socks, loop avoidance, the config-file caveat, where to legitimately get a proxy, and exactly what is and is not verified |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Component-by-component design, threading model, packet flow, the loop-avoidance problem |
 | [`docs/PROXY-PROTOCOLS.md`](docs/PROXY-PROTOCOLS.md) | Capability matrix with the reasoning, and per-protocol limitations |
 | [`docs/DNS-AND-IP.md`](docs/DNS-AND-IP.md) | DNS interception design, IPv4/IPv6 routing, DNS64/NAT64 |

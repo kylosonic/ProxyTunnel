@@ -1,0 +1,259 @@
+name: Build Android APK
+
+# Builds the Android app on a Linux runner and runs its JVM test suite.
+#
+# This workflow is the reason the Android side exists. The iOS job needs a macOS
+# runner and still cannot produce a tunnelling build without the Network Extension
+# entitlement, which a free Apple ID cannot have. Here there is no entitlement to
+# negotiate: VpnService is a normal platform API, the debug signing key is generated
+# by the Android SDK, and the whole thing builds on ubuntu-latest.
+#
+# What is verified by a green run:
+#   * the Kotlin sources compile (app + unit tests)
+#   * the JVM test suite passes, including the end-to-end proxy tests that start a
+#     real SOCKS5 server on loopback inside the test process
+#   * a debug APK is produced by AGP
+#   * the APK is a valid zip containing classes.dex, the manifest, and the native
+#     engine for the expected ABIs
+#
+# What is NOT verified here, and cannot be: that the tunnel actually carries traffic
+# on a device. That needs a phone with the VPN consent dialog accepted. See
+# android/README.md.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0'
+
+      - name: Confirm the SDK tools this workflow calls are present
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$sdk" ]; then echo "No Android SDK root in the environment." >&2; exit 1; fi
+          build_tools="$sdk/build-tools/35.0.0"
+          for tool in apksigner aapt2; do
+            # apksigner/aapt2 live under build-tools, which setup-android does not
+            # put on PATH, so they are addressed by absolute path from here on.
+            test -x "$build_tools/$tool" || { echo "missing $tool in $build_tools" >&2; exit 1; }
+          done
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$build_tools" >> "$GITHUB_ENV"
+          ls "$sdk/platforms"
+          "$build_tools/aapt2" version
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # No wrapper JAR is committed; the version is pinned here instead.
+          gradle-version: '8.9'
+
+      - name: Fetch the tunnel engine and verify its checksum
+        working-directory: android
+        run: |
+          chmod +x scripts/fetch-native-libs.sh
+          ./scripts/fetch-native-libs.sh
+          ls -l app/libs/
+
+      - name: Show what the engine actually contains
+        working-directory: android
+        run: |
+          set -euo pipefail
+          cd app/libs
+          unzip -o -q hev-socks5-tunnel.aar -d /tmp/hev-aar
+          echo "--- jni ---"
+          ls -1 /tmp/hev-aar/jni
+          echo "--- public API ---"
+          unzip -o -q /tmp/hev-aar/classes.jar -d /tmp/hev-classes
+          javap -classpath /tmp/hev-classes hev.htproxy.TProxyService \
+            | tee /tmp/hev-api.txt
+          # Fail loudly if the JNI contract this app compiles against has changed.
+          grep -q 'TProxyStartService(java.lang.String, int)' /tmp/hev-api.txt
+          grep -q 'TProxyStopService()' /tmp/hev-api.txt
+          grep -q 'TProxyGetStats()' /tmp/hev-api.txt
+
+      - name: Run the JVM test suite
+        working-directory: android
+        timeout-minutes: 20
+        run: gradle --no-daemon :app:testDebugUnitTest --stacktrace
+
+      - name: Assemble the debug APK
+        working-directory: android
+        timeout-minutes: 20
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Collect test reports
+        if: always()
+        working-directory: android
+        run: |
+          mkdir -p ../artifacts/android
+          for dir in app/build/test-results/testDebugUnitTest app/build/reports/tests/testDebugUnitTest; do
+            if [ -d "$dir" ]; then
+              name="$(basename "$dir")"
+              cp -r "$dir" "../artifacts/android/$name" || true
+            fi
+          done
+          # The HTML report's own CSS/JS is noise; the XML and the text summary are not.
+          find ../artifacts/android -type f -name '*.html' -delete || true
+          ls -R ../artifacts/android | head -60
+
+      - name: Write a readable test summary
+        if: always()
+        working-directory: android
+        run: |
+          set -euo pipefail
+          results=app/build/test-results/testDebugUnitTest
+          if [ ! -d "$results" ]; then
+            echo "No test results directory was produced." | tee ../artifacts/android/TEST-SUMMARY.txt
+            exit 0
+          fi
+          python3 - <<'PY' | tee ../artifacts/android/TEST-SUMMARY.txt
+          import glob, os, xml.etree.ElementTree as ET
+          total = failures = errors = skipped = 0
+          slowest = []
+          for path in sorted(glob.glob("app/build/test-results/testDebugUnitTest/*.xml")):
+              root = ET.parse(path).getroot()
+              total += int(root.get("tests", 0))
+              failures += int(root.get("failures", 0))
+              errors += int(root.get("errors", 0))
+              skipped += int(root.get("skipped", 0))
+              for case in root.iter("testcase"):
+                  slowest.append((float(case.get("time", 0)), root.get("name"), case.get("name")))
+          print(f"Android JVM tests: {total} run, {failures} failed, {errors} errored, {skipped} skipped")
+          print()
+          print("Slowest 10:")
+          for seconds, suite, name in sorted(slowest, reverse=True)[:10]:
+              print(f"  {seconds:7.2f}s  {suite}.{name}")
+          if failures or errors:
+              print()
+              print("Failures:")
+              for path in sorted(glob.glob("app/build/test-results/testDebugUnitTest/*.xml")):
+                  root = ET.parse(path).getroot()
+                  for case in root.iter("testcase"):
+                      for bad in list(case.iter("failure")) + list(case.iter("error")):
+                          print(f"  {root.get('name')}.{case.get('name')}")
+                          print("    " + (bad.get("message") or "").strip().splitlines()[0][:400])
+          PY
+
+      - name: Validate the APK
+        working-directory: android
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "$apk" ]; then echo "No APK was produced." >&2; exit 1; fi
+          echo "APK: $apk"
+          ls -l "$apk"
+          sha256sum "$apk" | tee ../artifacts/android/APK-SHA256.txt
+          cp "$apk" ../artifacts/android/ProxyTunnel-Android-debug.apk
+
+          echo "--- zip contents ---"
+          unzip -l "$apk" | head -40
+
+          echo "--- required entries ---"
+          for entry in AndroidManifest.xml classes.dex; do
+            unzip -l "$apk" | grep -q "$entry" || { echo "missing $entry" >&2; exit 1; }
+          done
+
+          echo "--- native engine ABIs ---"
+          unzip -l "$apk" | grep 'lib/.*/libhev-socks5-tunnel.so' | tee /tmp/abis.txt
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            grep -q "lib/$abi/libhev-socks5-tunnel.so" /tmp/abis.txt \
+              || { echo "missing native library for $abi" >&2; exit 1; }
+          done
+
+          echo "--- signing ---"
+          # A debug APK is signed with the SDK's throwaway debug key. That is the
+          # whole point: no developer account, no provisioning profile, no expiry.
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" \
+            | tee ../artifacts/android/APK-SIGNER.txt
+
+      - name: Report the manifest the APK really declares
+        working-directory: android
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          "$BUILD_TOOLS/aapt2" dump badging "$apk" > ../artifacts/android/APK-BADGING.txt || true
+          head -30 ../artifacts/android/APK-BADGING.txt
+          grep -q "package: name='io.github.kylosonic.proxytunnel'" ../artifacts/android/APK-BADGING.txt
+          grep -q 'sdkVersion' ../artifacts/android/APK-BADGING.txt
+          "$BUILD_TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$apk" \
+            > ../artifacts/android/APK-MANIFEST.txt
+          # The line that makes this a VPN and not just an app with a socket.
+          grep -q 'BIND_VPN_SERVICE' ../artifacts/android/APK-MANIFEST.txt
+
+      - name: Upload the APK and its evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyTunnel-Android-debug
+          path: artifacts/android/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the Gradle logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyTunnel-Android-build-logs
+          path: |
+            android/**/build/reports/**
+            android/**/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Last, so that every step above has already uploaded what it found. A bare
+      # `if:` on an earlier step would imply success() and silently skip the uploads
+      # on a failing build, which is exactly when they are worth having.
+      - name: Pass or fail
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "=== verification summary ==="
+          cat artifacts/android/TEST-SUMMARY.txt 2>/dev/null || echo "no test summary"
+          echo
+          cat artifacts/android/APK-SHA256.txt 2>/dev/null || echo "no APK was produced"
+          echo
+          if [ ! -f artifacts/android/ProxyTunnel-Android-debug.apk ]; then
+            echo "RESULT: FAILED — no APK."
+            exit 1
+          fi
+          # Any recorded failure fails the build; a warning is not a failure.
+          if grep -qE 'failed, [1-9]|[1-9] failed' artifacts/android/TEST-SUMMARY.txt 2>/dev/null; then
+            echo "RESULT: FAILED — tests failed."
+            exit 1
+          fi
+          echo "RESULT: PASSED — APK built and the JVM suite is green."

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A shield, drawn as a vector so the repository carries no binary assets. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#5C8CFF"
+        android:pathData="M54,26 L74,34 L74,54 C74,66 65,76 54,82 C43,76 34,66 34,54 L34,34 Z" />
+    <path
+        android:fillColor="#0B0E15"
+        android:pathData="M54,38 L64,42 L64,54 C64,61 59,67 54,70 C49,67 44,61 44,54 L44,42 Z" />
+</vector>

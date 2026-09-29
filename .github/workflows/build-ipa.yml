@@ -31,8 +31,16 @@ on:
       - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
+      # The Android app is a separate build on a Linux runner; changing it must not
+      # spend macOS minutes on a job it cannot affect. Use workflow_dispatch, or a
+      # change outside this path, to re-run iOS.
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
   pull_request:
     branches: [main, master]
+    paths-ignore:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
     inputs:
       bundle_id:

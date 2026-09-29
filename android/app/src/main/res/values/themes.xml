@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A plain platform theme: this app is Compose-only and uses no AppCompat or
+  Material-Components XML theme, so pulling either in would be dead weight.
+  minSdk is 29, so no legacy theme shims are needed.
+-->
+<resources>
+    <style name="Theme.ProxyTunnel" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:navigationBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

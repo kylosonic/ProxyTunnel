@@ -43,6 +43,23 @@ signing/
 fastlane/report.xml
 
 # ---------------------------------------------------------------------------
+# Android / Gradle
+# ---------------------------------------------------------------------------
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+# The tunnel engine AAR is fetched and checksum-verified by
+# android/scripts/fetch-native-libs.sh, so the binary is never committed.
+android/app/libs/
+*.aar
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# ---------------------------------------------------------------------------
 # Local build / test output
 # ---------------------------------------------------------------------------
 artifacts/
