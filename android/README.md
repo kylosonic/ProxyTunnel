@@ -3,6 +3,10 @@
 A real `VpnService` client that routes the whole device through a SOCKS5 proxy you
 supply, built so that it can actually run on a phone you own.
 
+**Status: the APK builds in CI from source and its 157-test suite is green. The
+tunnel has not been run on a physical device — see
+[What is verified, and what is not](#what-is-verified-and-what-is-not).**
+
 ```bash
 cd android
 ./scripts/fetch-native-libs.sh          # downloads the tunnel engine, verifies its SHA-256
@@ -193,23 +197,37 @@ mock was called and call that verification.
 
 ## What is verified, and what is not
 
-Verified by CI on every push (see `.github/workflows/build-apk.yml`):
+A green run of
+[`.github/workflows/build-apk.yml`](../.github/workflows/build-apk.yml) on a clean
+`ubuntu-latest` runner, reproduced on 2026-09-29 at commit `662e306`, confirms:
 
 * the Kotlin sources compile against the pinned engine AAR;
-* the full JVM test suite passes;
+* **157 JVM tests run, 0 fail, 0 error, 0 skipped** — including the 17 end-to-end
+  tests that start real SOCKS5 and HTTP CONNECT servers on loopback;
 * the AAR's JNI surface is re-checked with `javap` against what this app compiles
   against, so a changed engine fails the build instead of crashing at runtime;
-* a debug APK is produced and structurally validated: `classes.dex`, the manifest,
-  `BIND_VPN_SERVICE`, `libhev-socks5-tunnel.so` for `arm64-v8a`, `armeabi-v7a` and
-  `x86_64`, and a valid debug signature.
+* a debug APK is produced — `ProxyTunnel-Android-debug.apk`,
+  **57,936,100 bytes (55.25 MiB)**, SHA-256
+  `fe6c223c05460f3cb13f23cf5242ceda9cd194fd6278d44c49d16288c031ab79`;
+* the APK is structurally validated: `classes.dex`, the manifest, exactly
+  `minSdkVersion:'29'` / `targetSdkVersion:'35'`, `libhev-socks5-tunnel.so` for
+  `arm64-v8a`, `armeabi-v7a`, `x86_64` and `x86`, and a valid signature from
+  `CN=Android Debug, O=Android, C=US`;
+* the APK's own manifest declares `io.github.kylosonic.proxytunnel.vpn.ProxyTunnelService`
+  with `android:permission="android.permission.BIND_VPN_SERVICE"` and the
+  `android.net.VpnService` action.
+
+The build is not byte-reproducible — a local `assembleDebug` produces the same size
+and a different SHA-256, because debug builds embed build paths and zip timestamps.
+Compare the CI artifact against its own recorded hash, not against a local build.
 
 **Not verified, and not claimed:**
 
 * that the tunnel carries traffic **on a physical device**. That needs a phone with
   the consent dialog accepted, and there is no device in the build environment. The
-  code path is written against the engine's documented JNI contract and the
-  pattern `v2rayNG` uses, but "it compiles and the tests pass" is not the same claim
-  as "it works on your phone", so it is not made here.
+  code path is written against the engine's documented JNI contract and the pattern
+  `v2rayNG`'s `CoreVpnService` uses, but "it compiles and the tests pass" is not the
+  same claim as "it works on your phone", so it is not made here.
 * the HTTP CONNECT and HTTPS CONNECT protocols as *tunnel* upstreams. The engine
   speaks SOCKS5 only; the other two are supported for the connection test and for
   export, and the UI says so on the Connect tab rather than failing obscurely.
