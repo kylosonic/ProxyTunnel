@@ -6,6 +6,10 @@ What is tested, what is not, and why the difference matters.
 
 ## Where the suite stands
 
+**441 tests across two platforms: 434 pass, 7 skip.**
+
+### iOS — 284 tests
+
 Two batches run in CI on an iOS Simulator, and the split is deliberate: it means a
 slow or stuck batch cannot hide the other's result.
 
@@ -26,13 +30,24 @@ Nothing else is skipped. In particular the live-proxy tests **do** run: a real
 SOCKS5 server and a real HTTP CONNECT server are started on loopback inside the
 test process, and the production client is driven against them.
 
+### Android — 157 tests
+
+Ordinary JVM tests on a Linux runner. No emulator, no device, no instrumentation
+test runner.
+
+| Batch | Contents | Status in CI |
+|---|---|---|
+| **JVM** | Validation, regions, models, codecs, engine config, import/export, and live loopback proxies | 157 tests, all passing, **nothing skipped** |
+
 ---
 
 ## Running the tests
 
-**In CI:** every push and every manual dispatch runs both batches. Results are in
-the `ProxyTunnel-iOS-build-logs` artifact (`tests-logic.txt`,
-`tests-integration.txt`, and the two `.xcresult` bundles).
+**In CI:** every push and every manual dispatch runs all three batches. iOS results
+are in the `ProxyTunnel-iOS-build-logs` artifact (`tests-logic.txt`,
+`tests-integration.txt`, and the two `.xcresult` bundles); Android results are in
+`ProxyTunnel-Android-build-logs`, with a plain-text `TEST-SUMMARY.txt` in the
+`ProxyTunnel-Android-debug` artifact.
 
 **Locally, on a Mac:**
 
@@ -48,6 +63,14 @@ xcodebuild test \
 There is no `swift test` path. `ProxyTunnelCore` imports NetworkExtension,
 Security and Network, and the Keychain tests only mean something on an iOS
 simulator — see [What the tests cannot do](#what-the-tests-cannot-do).
+
+**Locally, for Android, on anything with a JDK and the Android SDK:**
+
+```bash
+cd android
+./scripts/fetch-native-libs.sh
+gradle :app:testDebugUnitTest
+```
 
 ---
 
@@ -321,6 +344,25 @@ one of these was found here and fixed.
 | **`SOCKS5.request()` appended the `ATYP` byte a second time**, inserting a stray byte and shifting the port by one. Every SOCKS5 `CONNECT` the client sent was malformed | `testConnectRequestWithIPv4` expected 10 bytes and got 11 |
 | `LogRedactor`'s Authorization rule ran *after* the generic key/value rule, which consumed only the scheme word and left the credential in place | `testMasksProxyAuthorizationHeader` found the base64 blob still present |
 | The test SOCKS5 server's per-connection session was a local, so it accepted connections and never replied | The SOCKS5 integration tests could never have passed |
+
+### Found on the Android side
+
+Same argument, different language. All three were found while writing the tests for
+this batch, and all three are fixed.
+
+| Bug | How it surfaced |
+|---|---|
+| **`HostValidator` echoed an embedded password back into its own error message.** For `alice:hunter2@example.com` the message was `Remove "alice:hunter2@" from the host.` That string is rendered in the UI and can reach a log, so a password the user pasted was being copied into both | `the host validator refuses embedded credentials` asserted the message does not contain `hunter2` |
+| **`LogRedactor` only masked credentials when a URL scheme preceded them.** The rule was `(?<=//)[^/\s:@]+:[^/\s@]+(?=@)`, so a bare `alice:hunter2@host` line — exactly what an unparseable paste looks like when it is echoed back as "could not read this" — kept the password in clear | `an unreadable line never shows the password back either` |
+| **The paste importer could not read the `host = 1.2.3.4  port = 1080` form its own UI advertised.** It split on whitespace first, which turned `host` and `=` into separate tokens and lost the pair, so `interpretKeyValue` returned null and the line fell through to the ambiguous-shape matcher | `key value pairs in any order` — an advertised format that silently did not work |
+
+Two more issues surfaced during the same pass and were fixed before the suite was
+green: the scheme parser reported an out-of-range port as "not a host with a port",
+which sends the user looking in the wrong place, and `HevConfig.singleQuote()`
+claimed no value could escape its own YAML scalar while leaving embedded newlines
+in place — a password containing `\n  udp: 'off'` would have injected a second
+config key. Line breaks are now stripped before quoting, which makes the claim
+true, and `a password with yaml metacharacters stays inside its scalar` checks it.
 
 ---
 

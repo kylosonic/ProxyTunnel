@@ -206,14 +206,41 @@ jobs:
         run: |
           set -euo pipefail
           apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
-          "$BUILD_TOOLS/aapt2" dump badging "$apk" > ../artifacts/android/APK-BADGING.txt || true
-          head -30 ../artifacts/android/APK-BADGING.txt
-          grep -q "package: name='io.github.kylosonic.proxytunnel'" ../artifacts/android/APK-BADGING.txt
-          grep -q 'sdkVersion' ../artifacts/android/APK-BADGING.txt
+
+          # Every check names itself. A bare `grep -q` that fails gives no clue which
+          # assertion it was, and this step exists precisely to be believable.
+          fail() { echo "FAILED: $1" >&2; exit 1; }
+
+          "$BUILD_TOOLS/aapt2" dump badging "$apk" > ../artifacts/android/APK-BADGING.txt
+          head -12 ../artifacts/android/APK-BADGING.txt
+
+          grep -q "package: name='io.github.kylosonic.proxytunnel'" ../artifacts/android/APK-BADGING.txt \
+            || fail "the APK's package name is not io.github.kylosonic.proxytunnel"
+          echo "ok  package name"
+
+          # Case matters. aapt2 prints "minSdkVersion" with a capital S, and a
+          # case-insensitive check during development hid exactly this mismatch.
+          grep -q "minSdkVersion:'29'" ../artifacts/android/APK-BADGING.txt \
+            || fail "minSdkVersion is not 29"
+          grep -q "targetSdkVersion:'35'" ../artifacts/android/APK-BADGING.txt \
+            || fail "targetSdkVersion is not 35"
+          echo "ok  minSdk 29, targetSdk 35"
+
           "$BUILD_TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$apk" \
             > ../artifacts/android/APK-MANIFEST.txt
-          # The line that makes this a VPN and not just an app with a socket.
-          grep -q 'BIND_VPN_SERVICE' ../artifacts/android/APK-MANIFEST.txt
+
+          # The three lines that make this a VPN and not just an app with a socket.
+          grep -q 'ProxyTunnelService' ../artifacts/android/APK-MANIFEST.txt \
+            || fail "the VPN service is not declared"
+          grep -q 'BIND_VPN_SERVICE' ../artifacts/android/APK-MANIFEST.txt \
+            || fail "the service does not require android.permission.BIND_VPN_SERVICE"
+          grep -q 'android.net.VpnService' ../artifacts/android/APK-MANIFEST.txt \
+            || fail "the service does not handle the android.net.VpnService action"
+          echo "ok  VpnService declared with BIND_VPN_SERVICE"
+
+          grep -q 'FOREGROUND_SERVICE_SPECIAL_USE' ../artifacts/android/APK-MANIFEST.txt \
+            || fail "the Android 14 foreground-service type permission is missing"
+          echo "ok  foreground service permission present"
 
       - name: Upload the APK and its evidence
         if: always()
