@@ -343,17 +343,42 @@ filters and selects from the proxies you have stored.
 It deliberately searches **only your own list**. There is no endpoint discovery, no
 downloaded list, and no "find me a free proxy" — see the section below for why.
 
+#### Looking up a location on a provider account
+
+Implemented in the Android app. Type a country, and the app can ask a proxy provider
+you already have an account with — using an API key you generate — which of *your*
+proxies are in that country. It adds them, labels them by country, and you connect.
+The first supported provider is Webshare; their free tier is ten proxies, and their
+API is documented and supports a country filter.
+
+Their proxies speak HTTP CONNECT rather than SOCKS5, which is why the app contains a
+**local SOCKS5 bridge**: the engine talks SOCKS5 to a loopback server, and that server
+egresses through your HTTP proxy. It carries TCP and DNS — DNS by relaying it as
+DNS-over-TCP through the CONNECT tunnel, which is what keeps name resolution working
+at all. Other UDP (QUIC, HTTP/3, games) cannot cross a CONNECT tunnel and is dropped,
+with the count shown on the Connect screen rather than hidden.
+
+A side effect worth noting: with the bridge, the upstream password stays in memory and
+the engine's config file contains only `127.0.0.1`, so the credential never reaches
+disk. For HTTP proxies that is strictly better than the direct path.
+
 #### Why there is no free-proxy search
 
-This feature was requested and declined. Free residential proxy lists are, in
-practice, one of three things: open proxies on strangers' machines (someone else's
-server, someone else's bill, not yours to route through), honeypots published so
-that traffic through them can be read and rewritten, or SDKs that pay for the
-"residential" pool by reselling other people's bandwidth. Putting a username and
-password through any of them is how accounts get stolen.
+Automated discovery of free proxies was requested and declined, and the reasoning is
+worth keeping. Free residential proxy lists are, in practice, one of three things:
+open proxies on strangers' machines (someone else's server, someone else's bill, not
+yours to route through), honeypots published so that traffic through them can be read
+and rewritten, or SDKs that pay for the "residential" pool by reselling other people's
+bandwidth. Putting a username and password through any of them is how accounts get
+stolen — and having the *app* pick the endpoint for you is worse than picking it
+yourself.
 
-What the app does instead is filter by location over a list you obtained
-legitimately. Good sources, in order of how well they work:
+There is also no free residential pool to find. Residential bandwidth costs money
+because a real person is paying for it; anything giving it away is monetising you or
+someone else. Free tiers are datacentre IPs.
+
+So the app filters by location over a list you obtained legitimately, and can ask a
+provider you have an account with. Good sources, in order of how well they work:
 
 * the proxy provider you already pay for — most sell SOCKS5 endpoints alongside
   their VPN product;
@@ -692,7 +717,7 @@ signing later.
 
 ## Testing
 
-**441 tests across both platforms, 434 pass, 7 skip.**
+**485 tests across both platforms, 478 pass, 7 skip.**
 
 ### iOS — 284 tests
 
@@ -704,7 +729,7 @@ Split into two batches in CI so that a slow one cannot hide the other's result:
 | Logic | Validation, models, codecs, storage, proxy import and export | **216 passing** |
 | Integration | TCP state machine, tunnel engine, live proxies, Keychain | **61 passing, 7 skipped** |
 
-### Android — 157 tests
+### Android — 201 tests
 
 Run on any JVM: `gradle :app:testDebugUnitTest`, no emulator and no device.
 
@@ -712,11 +737,13 @@ Run on any JVM: `gradle :app:testDebugUnitTest`, no emulator and no device.
 |---|---|---|
 | `ValidationTest` | Host/port/sanitiser rules, redaction, and a reflection check that `ProxyProfile` has no field that could hold a password | **32 passing** |
 | `ImportAndShareLinkTest` | Every paste format, ambiguity detection, and share-link round trips including awkward passwords | **40 passing** |
+| `ProviderApiTest` | The provider lookup against a real HTTP server: auth header, country filter, pagination, every failure path, and the plain empty state | **25 passing** |
+| `Socks5BridgeTest` | The loopback SOCKS5 bridge: TCP relay through a real CONNECT proxy, and DNS carried as DNS-over-TCP through a tunnel, with pooling | **19 passing** |
 | `Socks5CodecTest` | SOCKS5 and RFC 1929 byte-for-byte | **19 passing** |
 | `HttpConnectCodecTest` | HTTP CONNECT request/response framing per RFC 9110 | **18 passing** |
 | `RegionsTest` | Location labels, including the two-letter-code trap | **18 passing** |
-| `HevConfigTest` | The generated engine YAML, including YAML injection attempts | **13 passing** |
 | `ProxyProbeIntegrationTest` | Real SOCKS5 and HTTP CONNECT servers on loopback, real relays | **17 passing** |
+| `HevConfigTest` | The generated engine YAML, including YAML injection attempts | **13 passing** |
 
 The **live-proxy tests really do run in CI** on both platforms: a SOCKS5 server and
 an HTTP CONNECT server are started on loopback inside the test process, and the

@@ -124,39 +124,99 @@ asserts exactly that, by reflecting over the class's declared fields.
 
 ## Choosing a location
 
-The app will not search the internet for proxies, and there is a feature it
-deliberately does not have: automatic discovery of "free residential proxies".
+### What the app does
 
-That request was declined on technical grounds, and the reasoning is worth keeping
-in the repository. Free residential proxy lists are, in practice, one of three
-things:
+Type a country and it searches **the proxies you have stored**. A label like
+`ProxyCheap | US | New York` or a share-link fragment of `#nl-amsterdam-01` is scanned
+for a country name, a two-letter code in capitals, or a common city name, and that
+becomes the proxy's location. `RegionCatalog` holds the place names; it holds no
+endpoints.
 
-* **open proxies on strangers' machines** — misconfigured servers that someone else
-  is paying for, and which it is not yours to route through;
-* **honeypots** — endpoints published precisely so that the traffic sent through
-  them can be read, logged and rewritten, which is how session cookies and
-  credentials get stolen;
-* **botnet-adjacent SDKs** — software that pays for the "residential" pool by
-  reselling other people's bandwidth from their own devices.
+If your own list has nothing for that country, the app can ask **a provider you
+already have an account with** — with an API key you generate — which of *your*
+proxies are there, then add them, label them, and connect. That is the whole
+"type a location and get a proxy" flow, scoped to endpoints somebody has agreed to
+let you use.
 
-None of those is safe to put a username and password through, and using them is
-unauthorised use of someone else's computer.
+If neither has anything, it says so plainly and stops. No pricing, no upsell, no
+guessing.
 
-What the app does instead: you add a proxy you obtained legitimately, label the
-country it exits in, and then pick by location. `RegionCatalog` recognises country
-names, two-letter codes and common city names in a label like
-`ProxyCheap | US | New York`, and the location picker filters and selects from your
-own list. It states plainly when you have nothing for a country, instead of
-pretending to have found something.
+### What the app deliberately does not do
 
-Legitimate sources, in order of how well they work:
+It will not crawl the internet for free proxies, and that is a design decision rather
+than a missing feature. Free proxy lists are, concretely, one of three things:
 
-* **the provider you already pay for** — most sell SOCKS5 or HTTP endpoints;
-* **a paid or trial residential plan** from a vendor whose terms you have read;
-* **a free tier from a datacentre-proxy vendor** — datacentre IPs, not residential,
-  but legitimate and often free at low volume;
-* **your own machine** — Tor's SOCKS port (`127.0.0.1:9050`), `ssh -D 1080 you@vps`,
-  or a small VPS running `3proxy`/`dante`.
+* **open proxies on strangers' machines** — misconfigured servers somebody else pays
+  for, which it is not yours to route through;
+* **honeypots** — endpoints published precisely so the traffic through them can be
+  logged and rewritten, which is how session cookies and credentials get taken;
+* **botnet-adjacent SDKs** — software that funds its "residential" pool by reselling
+  other people's bandwidth from their own devices.
+
+[ProxyScrape's own free list](https://github.com/ProxyScrape/free-proxy-list)
+advertises "~22k proxies across 90+ countries, refreshed every 5 minutes". Those are
+scraped endpoints, not offers. Wiring the app to auto-connect to them would mean the
+app choosing, on your behalf, which stranger's server your traffic and credentials
+pass through.
+
+There is also no free residential pool to find. Residential bandwidth costs money
+because a real person is paying for it; anything handing it out free is monetising you
+or someone else. Free tiers are datacentre IPs. That is the tradeoff, stated plainly.
+
+### Getting an account to look up
+
+[Webshare](https://www.webshare.io/) is the first provider supported. Their free tier
+is ten datacentre proxies and 1 GB/month, which is enough to test with, and their API
+is documented and lets you filter by country. Generate a key in their dashboard and
+paste it into **Find a proxy by location**; it goes into the Android Keystore like any
+other credential and is never shown again.
+
+Their proxies speak **HTTP CONNECT, not SOCKS5** — which is exactly why the bridge
+below exists.
+
+Other legitimate sources, all of which can be added by hand: the provider you already
+pay for, a paid or trial residential plan, another vendor's datacentre free tier, or a
+SOCKS5 endpoint you run yourself (Tor's `127.0.0.1:9050`, `ssh -D 1080 you@vps`, a
+small VPS running `dante` or `3proxy`).
+
+---
+
+## The SOCKS5 bridge
+
+`hev-socks5-tunnel` speaks SOCKS5 and nothing else, and almost every proxy plan —
+including every free tier worth having — is sold as HTTP rather than SOCKS5. Without
+something in between, you can pay for a proxy and still be unable to put it behind the
+tunnel.
+
+So the app runs a SOCKS5 server on loopback and points the engine at that:
+
+```
+hev-socks5-tunnel ──SOCKS5──▶ 127.0.0.1:<port> ──HTTP CONNECT──▶ your proxy ──▶ internet
+```
+
+Both hops happen inside the app's own process, which is excluded from its own tunnel
+by `addDisallowedApplication`, so neither the loopback hop nor the dial to the proxy
+can loop back into the tun.
+
+**What it carries:**
+
+| | |
+|---|---|
+| TCP | Fully. Every `CONNECT` becomes one HTTP CONNECT tunnel. |
+| DNS | Yes, by design. `UDP ASSOCIATE` is accepted and queries are relayed as **DNS-over-TCP (RFC 7766)** through a CONNECT tunnel, with the connection pooled per resolver so lookups do not pay for a handshake each. This is the same technique the iOS tunnel uses for HTTP proxies. Without it, DNS would simply not resolve and the tunnel would be useless. |
+| Everything else UDP | Dropped and **counted**. HTTP CONNECT has no datagram relay, so QUIC, HTTP/3, WireGuard and UDP games cannot work through it. The count appears on the Connect screen, because "some of your traffic is quietly going nowhere" is something you should be able to see. |
+
+**HTTPS CONNECT upstreams are refused**, not half-supported. That protocol means TLS
+*to the proxy*, which would put an untested TLS path in the middle of the tunnel. The
+UI blocks it up front.
+
+### A side benefit: the password no longer reaches disk
+
+With a SOCKS5 upstream the engine takes a config *file*, so the password is written to
+disk for the duration of the tunnel. With the bridge, the upstream credentials stay in
+memory and the config file contains only `127.0.0.1`. So for HTTP proxies — which is
+most of them — this is strictly better than the direct path, not worse.
+
 
 ---
 
@@ -199,16 +259,20 @@ mock was called and call that verification.
 
 A green run of
 [`.github/workflows/build-apk.yml`](../.github/workflows/build-apk.yml) on a clean
-`ubuntu-latest` runner, reproduced on 2026-09-29 at commit `662e306`, confirms:
+`ubuntu-latest` runner confirms:
 
 * the Kotlin sources compile against the pinned engine AAR;
-* **157 JVM tests run, 0 fail, 0 error, 0 skipped** — including the 17 end-to-end
-  tests that start real SOCKS5 and HTTP CONNECT servers on loopback;
+* **201 JVM tests run, 0 fail, 0 error, 0 skipped**, including:
+  * 17 end-to-end proxy tests that start real SOCKS5 and HTTP CONNECT servers on
+    loopback;
+  * 19 bridge tests, among them a DNS query that travels as DNS-over-TCP through a
+    real CONNECT tunnel and comes back as a SOCKS5 UDP datagram;
+  * 25 provider-API tests against a real HTTP server answering the documented
+    Webshare response shape, covering the auth header, the country filter,
+    pagination, and every failure path;
 * the AAR's JNI surface is re-checked with `javap` against what this app compiles
   against, so a changed engine fails the build instead of crashing at runtime;
-* a debug APK is produced — `ProxyTunnel-Android-debug.apk`,
-  **57,936,100 bytes (55.25 MiB)**, SHA-256
-  `fe6c223c05460f3cb13f23cf5242ceda9cd194fd6278d44c49d16288c031ab79`;
+* a debug APK is produced and uploaded as a release asset;
 * the APK is structurally validated: `classes.dex`, the manifest, exactly
   `minSdkVersion:'29'` / `targetSdkVersion:'35'`, `libhev-socks5-tunnel.so` for
   `arm64-v8a`, `armeabi-v7a`, `x86_64` and `x86`, and a valid signature from
@@ -248,11 +312,14 @@ android/
 │       │   │   ├── MainActivity.kt
 │       │   │   ├── core/                Model, Validation, Regions, Interchange,
 │       │   │   │                        Protocols (SOCKS5 + CONNECT codecs),
-│       │   │   │                        ProxyProbe, HevConfig
+│       │   │   │                        ProxyProbe, HevConfig,
+│       │   │   │                        Socks5Bridge, ProviderApi
 │       │   │   ├── data/                SecretStore (Keystore), ProfileStore (JSON)
 │       │   │   ├── vpn/                 ProxyTunnelService (VpnService)
 │       │   │   └── ui/                  Compose screens, sheets, view model
 │       │   └── res/                     strings, theme, generated vector icon
-│       └── test/                        JVM tests, incl. loopback proxy servers
+│       └── test/                        JVM tests, incl. loopback proxy servers,
+│                                        a fake HTTP CONNECT proxy, a DNS-over-TCP
+│                                        server and a fake provider API
 └── scripts/fetch-native-libs.sh         pinned download + SHA-256 verification
 ```

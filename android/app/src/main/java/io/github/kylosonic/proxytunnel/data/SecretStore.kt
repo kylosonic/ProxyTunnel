@@ -90,5 +90,8 @@ class SecretStore(context: Context) {
 
         /** One password per profile, so deleting a profile deletes exactly one secret. */
         fun passwordKey(profileId: String) = "password.$profileId"
+
+        /** A provider API key, which is a bearer credential and gets the same treatment. */
+        fun providerKey(providerId: String) = "provider.$providerId.apiKey"
     }
 }

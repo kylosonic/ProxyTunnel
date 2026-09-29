@@ -266,7 +266,6 @@ internal class FakeSocks5Proxy(
 
 /** A forward proxy that understands CONNECT, with a configurable answer. */
 internal class FakeHttpProxy(private val statusLine: String) : Closeable {
-
     private val listener = ServerSocket(0, 20, InetAddress.getByName(TestNet.LOOPBACK))
     private val pool = TestNet.daemonPool()
     private val closed = AtomicBoolean(false)
@@ -274,6 +273,9 @@ internal class FakeHttpProxy(private val statusLine: String) : Closeable {
     val port: Int get() = listener.localPort
 
     @Volatile var lastHead: String? = null
+
+    /** How many CONNECT tunnels were opened. Used to prove DNS tunnels are pooled. */
+    val connectCount = java.util.concurrent.atomic.AtomicInteger()
 
     init {
         pool.submit {
@@ -292,6 +294,7 @@ internal class FakeHttpProxy(private val statusLine: String) : Closeable {
         socket.use { client ->
             val head = TestNet.readHead(client.getInputStream())
             lastHead = head
+            connectCount.incrementAndGet()
             val output = client.getOutputStream()
 
             if (!statusLine.contains(" 200")) {
@@ -325,6 +328,199 @@ internal class FakeHttpProxy(private val statusLine: String) : Closeable {
             Thread { TestNet.pipe(upstream.getInputStream(), output) }.apply { isDaemon = true }.start()
             TestNet.pipe(client.getInputStream(), upstream.getOutputStream())
             runCatching { upstream.close() }
+        }
+    }
+
+    override fun close() {
+        closed.set(true)
+        runCatching { listener.close() }
+        pool.shutdownNow()
+    }
+}
+
+/**
+ * A DNS server reachable only over TCP, speaking the RFC 7766 two-byte length prefix.
+ *
+ * It exists to prove the bridge's UDP path: a SOCKS5 `UDP ASSOCIATE` datagram goes in,
+ * and the answer has to come back out having travelled as DNS-over-TCP through an HTTP
+ * CONNECT tunnel. A UDP DNS server would not exercise any of that.
+ *
+ * It answers every query with a fixed A record, so the test asserts on bytes rather
+ * than on a resolver's behaviour.
+ */
+internal class FakeDnsOverTcpServer(private val answerIP: String = "203.0.113.9") : Closeable {
+
+    private val listener = ServerSocket(0, 20, InetAddress.getByName(TestNet.LOOPBACK))
+    private val pool = TestNet.daemonPool()
+    private val closed = AtomicBoolean(false)
+
+    val port: Int get() = listener.localPort
+
+    /** Every question this server was asked, as raw bytes. */
+    val queries: MutableList<ByteArray> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /** Set to refuse the connection, for the failure path. */
+    @Volatile
+    var refuseConnections = false
+
+    init {
+        pool.submit {
+            while (!closed.get()) {
+                val socket = try {
+                    listener.accept()
+                } catch (e: Exception) {
+                    break
+                }
+                pool.submit { serve(socket) }
+            }
+        }
+    }
+
+    private fun serve(socket: Socket) {
+        socket.use {
+            try {
+                it.tcpNoDelay = true
+                val input = it.getInputStream()
+                val output = it.getOutputStream()
+                while (true) {
+                    val lengthBytes = TestNet.readExactly(input, 2)
+                    val length = ((lengthBytes[0].toInt() and 0xFF) shl 8) or (lengthBytes[1].toInt() and 0xFF)
+                    if (length == 0) return
+                    val query = TestNet.readExactly(input, length)
+                    queries += query
+
+                    val response = buildResponse(query)
+                    output.write(byteArrayOf(((response.size shr 8) and 0xFF).toByte(), (response.size and 0xFF).toByte()))
+                    output.write(response)
+                    output.flush()
+                }
+            } catch (e: Exception) {
+                // The peer closed, or the test is tearing down.
+            }
+        }
+    }
+
+    /**
+     * A minimal but structurally valid DNS response: it echoes the question section
+     * from the query and answers with one A record, so a real parser would accept it.
+     */
+    private fun buildResponse(query: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val id = if (query.size >= 2) byteArrayOf(query[0], query[1]) else byteArrayOf(0, 0)
+        out.write(id)
+        out.write(byteArrayOf(0x81.toByte(), 0x80.toByte())) // response, recursion available
+        out.write(byteArrayOf(0, 1))                          // QDCOUNT
+        out.write(byteArrayOf(0, 1))                          // ANCOUNT
+        out.write(byteArrayOf(0, 0))                          // NSCOUNT
+        out.write(byteArrayOf(0, 0))                          // ARCOUNT
+
+        // Copy the question section verbatim: QNAME ... QTYPE QCLASS.
+        var offset = 12
+        while (offset < query.size) {
+            out.write(query[offset].toInt())
+            if (query[offset].toInt() == 0) {
+                offset++
+                break
+            }
+            offset += (query[offset].toInt() and 0xFF) + 1
+        }
+        if (offset + 3 < query.size) {
+            out.write(query, offset, 4)
+        } else {
+            out.write(byteArrayOf(0, 1, 0, 1))
+        }
+
+        // Answer: a compression pointer to the question name, type A, class IN, TTL 60.
+        out.write(byteArrayOf(0xC0.toByte(), 0x0C))
+        out.write(byteArrayOf(0, 1))       // TYPE A
+        out.write(byteArrayOf(0, 1))       // CLASS IN
+        out.write(byteArrayOf(0, 0, 0, 60)) // TTL
+        out.write(byteArrayOf(0, 4))       // RDLENGTH
+        answerIP.split(".").forEach { out.write(it.toInt()) }
+        return out.toByteArray()
+    }
+
+    override fun close() {
+        closed.set(true)
+        runCatching { listener.close() }
+        pool.shutdownNow()
+    }
+}
+/**
+ * A stand-in for a proxy provider's REST API.
+ *
+ * Deliberately a real HTTP server on loopback rather than a mock of the client: the
+ * thing worth testing is that the app builds the right request — path, query, auth
+ * header — and parses the documented response, and a mock would test neither.
+ */
+internal class FakeProviderServer(
+    private val handler: (target: String, authorization: String?) -> Pair<Int, String>
+) : Closeable {
+
+    private val listener = ServerSocket(0, 20, InetAddress.getByName(TestNet.LOOPBACK))
+    private val pool = TestNet.daemonPool()
+    private val closed = AtomicBoolean(false)
+
+    val port: Int get() = listener.localPort
+    val baseUrl: String get() = "http://${TestNet.LOOPBACK}:$port/api/v2"
+
+    val requests = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    @Volatile var lastAuthorization: String? = null
+
+    init {
+        pool.submit {
+            while (!closed.get()) {
+                val socket = try {
+                    listener.accept()
+                } catch (e: Exception) {
+                    break
+                }
+                pool.submit { serve(socket) }
+            }
+        }
+    }
+
+    private fun serve(socket: Socket) {
+        socket.use {
+            try {
+                val head = TestNet.readHead(it.getInputStream())
+                val lines = head.replace("\r\n", "\n").split("\n")
+                val requestLine = lines.firstOrNull().orEmpty()
+                val target = requestLine.split(" ").getOrNull(1).orEmpty()
+                val authorization = lines.drop(1)
+                    .firstOrNull { it.lowercase().startsWith("authorization:") }
+                    ?.substringAfter(":")
+                    ?.trim()
+
+                requests += target
+                lastAuthorization = authorization
+
+                val (status, body) = handler(target, authorization)
+                val bytes = body.toByteArray(StandardCharsets.UTF_8)
+                val reason = when (status) {
+                    200 -> "OK"
+                    302 -> "Found"
+                    401 -> "Unauthorized"
+                    403 -> "Forbidden"
+                    429 -> "Too Many Requests"
+                    else -> "Status"
+                }
+                val extra = if (status == 302) "Location: https://elsewhere.example.com/steal\r\n" else ""
+                it.getOutputStream().write(
+                    (
+                        "HTTP/1.1 $status $reason\r\n" +
+                            "Content-Type: application/json\r\n" +
+                            "Content-Length: ${bytes.size}\r\n" +
+                            extra +
+                            "Connection: close\r\n\r\n"
+                        ).toByteArray(StandardCharsets.ISO_8859_1)
+                )
+                it.getOutputStream().write(bytes)
+                it.getOutputStream().flush()
+            } catch (e: Exception) {
+                // The client hung up; nothing to report.
+            }
         }
     }
 

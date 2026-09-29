@@ -15,6 +15,19 @@ enum class ProxyProtocol(val wireName: String, val displayName: String, val defa
 
     val supportsTunnelUpstream: Boolean get() = this == SOCKS5
 
+    /**
+     * Whether the local SOCKS5 bridge can put this protocol behind the tunnel.
+     *
+     * SOCKS5 goes straight to the engine. HTTP CONNECT is bridged, which is what makes
+     * a plan sold as "HTTP proxy" usable at all — most plans, and every free tier worth
+     * having, are HTTP. HTTPS CONNECT means TLS *to the proxy*, which the bridge does
+     * not implement, so it is refused rather than half-supported.
+     */
+    val supportsBridgeUpstream: Boolean get() = this == SOCKS5 || this == HTTP_CONNECT
+
+    /** Whether the engine needs the bridge in front of a proxy speaking this protocol. */
+    val needsBridge: Boolean get() = this == HTTP_CONNECT
+
     val usesTls: Boolean get() = this == HTTPS_CONNECT
 
     /** Remote name resolution: all three let the proxy resolve the name. */
@@ -56,6 +69,15 @@ data class ProxyProfile(
 
     /** `United States` for a known code, the code itself for anything typed by hand. */
     val regionName: String? get() = RegionCatalog.displayName(regionCode)
+
+    /**
+     * Whether this proxy can carry the tunnel, either directly or through the bridge.
+     * See [ProxyProtocol.supportsBridgeUpstream].
+     */
+    val supportsBridgeUpstream: Boolean get() = protocol.supportsBridgeUpstream
+
+    /** Whether the engine needs the bridge in front of this proxy. */
+    val needsBridge: Boolean get() = protocol.needsBridge
 
     /** One line that is safe to log. */
     val redactedSummary: String

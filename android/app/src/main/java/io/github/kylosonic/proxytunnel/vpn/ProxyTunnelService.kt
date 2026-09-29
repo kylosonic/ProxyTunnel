@@ -14,8 +14,9 @@ import hev.htproxy.TProxyService
 import io.github.kylosonic.proxytunnel.MainActivity
 import io.github.kylosonic.proxytunnel.R
 import io.github.kylosonic.proxytunnel.core.HevConfig
-import io.github.kylosonic.proxytunnel.core.ProxyProtocol
+import io.github.kylosonic.proxytunnel.core.ProxyCredential
 import io.github.kylosonic.proxytunnel.core.ProxyProfile
+import io.github.kylosonic.proxytunnel.core.Socks5Bridge
 import io.github.kylosonic.proxytunnel.data.ProfileStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,6 +61,16 @@ class ProxyTunnelService : VpnService() {
         val bytesOut: Long = 0,
         val packetsIn: Long = 0,
         val packetsOut: Long = 0,
+        /** True when an HTTP CONNECT proxy is carrying the tunnel via the local bridge. */
+        val bridged: Boolean = false,
+        /** DNS lookups relayed through the bridge as DNS-over-TCP. */
+        val dnsQueries: Long = 0,
+        /**
+         * UDP datagrams the bridge could not carry. Non-zero is normal for an
+         * HTTP-upstream tunnel — QUIC and HTTP/3 cannot cross a CONNECT tunnel — but
+         * the user deserves to see it rather than wonder why a video call is broken.
+         */
+        val droppedDatagrams: Long = 0,
         val failure: String? = null
     )
 
@@ -67,6 +78,15 @@ class ProxyTunnelService : VpnService() {
     private var configFile: File? = null
     private var tunnelThread: Thread? = null
     private var statsThread: Thread? = null
+
+    /**
+     * Present only when an HTTP CONNECT proxy is carrying the tunnel.
+     *
+     * It is a SOCKS5 server on loopback that the engine talks to, and it egresses
+     * through the HTTP proxy. Closing it releases the port and every pooled DNS
+     * tunnel with it.
+     */
+    private var bridge: Socks5Bridge? = null
 
     @Volatile
     private var stopping = false
@@ -123,10 +143,14 @@ class ProxyTunnelService : VpnService() {
             fail("That proxy profile no longer exists.")
             return
         }
-        if (profile.protocol != ProxyProtocol.SOCKS5) {
+        if (!Socks5Bridge.supports(profile)) {
             // Worth saying plainly rather than letting the engine fail obscurely:
-            // hev-socks5-tunnel speaks SOCKS5 only.
-            fail("The tunnel upstream must be SOCKS5. \"${profile.name}\" is ${profile.protocol.displayName}.")
+            // hev-socks5-tunnel speaks SOCKS5, and the bridge covers HTTP CONNECT.
+            // HTTPS CONNECT means TLS to the proxy, which the bridge does not do.
+            fail(
+                "The tunnel cannot use ${profile.protocol.displayName}. Use SOCKS5 or HTTP CONNECT, " +
+                    "or keep this profile for the connection test."
+            )
             return
         }
 
@@ -134,6 +158,29 @@ class ProxyTunnelService : VpnService() {
         if (profile.usesAuthentication && password == null) {
             fail("No password is stored for \"${profile.name}\". Re-enter it in the proxy's settings.")
             return
+        }
+
+        // An HTTP proxy cannot be handed to the engine directly, so a SOCKS5 bridge is
+        // started on loopback and the engine is pointed at that instead. Everything the
+        // app does stays inside this process, which is excluded from the tunnel, so
+        // neither the loopback hop nor the dial to the proxy can loop back into it.
+        val credential = if (profile.usesAuthentication) {
+            ProxyCredential(profile.username.orEmpty(), password.orEmpty())
+        } else {
+            null
+        }
+        val engineEndpoint: Pair<String, Int> = if (profile.needsBridge) {
+            val relay = Socks5Bridge(profile, credential)
+            val port = try {
+                relay.start()
+            } catch (e: Exception) {
+                fail("Could not start the local bridge: ${e.message}")
+                return
+            }
+            bridge = relay
+            Socks5Bridge.LOOPBACK to port
+        } else {
+            profile.host to profile.port
         }
 
         startForeground(NOTIFICATION_ID, buildNotification(profile.name, "Starting…"))
@@ -146,10 +193,11 @@ class ProxyTunnelService : VpnService() {
             .addRoute("::", 0)
             .setSession("ProxyTunnel — ${profile.name}")
 
-        // The resolvers advertised to apps. The tunnel does not terminate DNS
-        // itself: hev relays UDP through the SOCKS5 association, so queries reach
-        // the proxy's egress rather than the carrier's resolver, which is the same
-        // leak-avoidance property the iOS tunnel provides.
+        // The resolvers advertised to apps. The tunnel does not terminate DNS itself:
+        // hev relays UDP through the SOCKS5 association, so queries reach the proxy's
+        // egress rather than the carrier's resolver. When the bridge is in front, it
+        // answers UDP ASSOCIATE and carries those queries as DNS-over-TCP through the
+        // CONNECT tunnel, which is what keeps name resolution working at all.
         listOf("1.1.1.1", "1.0.0.1").forEach { builder.addDnsServer(it) }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -175,7 +223,11 @@ class ProxyTunnelService : VpnService() {
         tun = descriptor
 
         val config = try {
-            writeConfig(profile, password)
+            // The engine is pointed at the bridge when there is one, and at the proxy
+            // otherwise. In the bridged case the config carries no credentials: the
+            // upstream ones live in the bridge, in memory, and the loopback hop needs
+            // none because no other app can reach it.
+            writeConfig(engineEndpoint.first, engineEndpoint.second)
         } catch (e: Exception) {
             fail("Could not write the tunnel configuration: ${e.message}")
             return
@@ -203,7 +255,8 @@ class ProxyTunnelService : VpnService() {
             Status(
                 state = State.RUNNING,
                 profileName = profile.name,
-                upstream = profile.displayEndpoint
+                upstream = profile.displayEndpoint,
+                bridged = bridge != null
             )
         )
         startForeground(NOTIFICATION_ID, buildNotification(profile.name, "Connected to ${profile.displayEndpoint}"))
@@ -214,17 +267,14 @@ class ProxyTunnelService : VpnService() {
      * Writes the engine's configuration.
      *
      * Written with owner-only permissions into the app's private directory, and
-     * deleted on stop: it is the one place on Android where the password touches
-     * the filesystem, because the engine takes a path rather than a buffer.
+     * deleted on stop: it is the one place on Android where a credential can touch
+     * the filesystem, because the engine takes a path rather than a buffer. When the
+     * bridge is in front, the credentials stay in memory and this file holds only
+     * `127.0.0.1`, which is a strictly better position than the direct case.
      */
-    private fun writeConfig(profile: ProxyProfile, password: String?): File {
+    private fun writeConfig(host: String, port: Int): File {
         val file = File(filesDir, HevConfig.FILE_NAME)
-        val text = HevConfig.yaml(
-            host = profile.host,
-            port = profile.port,
-            username = profile.username,
-            password = password
-        )
+        val text = HevConfig.yaml(host = host, port = port, username = null, password = null)
         file.writeText(text)
         runCatching {
             file.setReadable(false, false)
@@ -250,6 +300,11 @@ class ProxyTunnelService : VpnService() {
         runCatching { tun?.close() }
         tun = null
 
+        // Release the loopback port and the pooled DNS tunnels. Leaving either open
+        // would leak sockets on every reconnect.
+        runCatching { bridge?.close() }
+        bridge = null
+
         // The config holds the password, so it goes as soon as the tunnel does.
         runCatching { configFile?.delete() }
         configFile = null
@@ -272,6 +327,8 @@ class ProxyTunnelService : VpnService() {
         publish(Status(state = State.FAILED, failure = message))
         runCatching { tun?.close() }
         tun = null
+        runCatching { bridge?.close() }
+        bridge = null
         runCatching { configFile?.delete() }
         configFile = null
         runCatching {
@@ -289,13 +346,26 @@ class ProxyTunnelService : VpnService() {
         statsThread = thread(name = "hev-stats", isDaemon = true) {
             while (!stopping && !Thread.currentThread().isInterrupted) {
                 val stats = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                // The bridge's own counters matter more than the engine's when it is in
+                // front: dropped datagrams are the one number that explains why some
+                // apps work and others do not.
+                val relay = bridge?.stats
                 if (stats != null && stats.size >= 4) {
                     publish(
                         status.value.copy(
                             packetsOut = stats[0],
                             bytesOut = stats[1],
                             packetsIn = stats[2],
-                            bytesIn = stats[3]
+                            bytesIn = stats[3],
+                            dnsQueries = relay?.dnsQueries ?: 0,
+                            droppedDatagrams = relay?.droppedDatagrams ?: 0
+                        )
+                    )
+                } else if (relay != null) {
+                    publish(
+                        status.value.copy(
+                            dnsQueries = relay.dnsQueries,
+                            droppedDatagrams = relay.droppedDatagrams
                         )
                     )
                 }

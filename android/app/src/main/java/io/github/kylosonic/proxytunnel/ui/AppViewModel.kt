@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.kylosonic.proxytunnel.core.ImportEntry
 import io.github.kylosonic.proxytunnel.core.LogRedactor
+import io.github.kylosonic.proxytunnel.core.ProviderApi
 import io.github.kylosonic.proxytunnel.core.ProxyCredential
 import io.github.kylosonic.proxytunnel.core.ProxyImportParser
 import io.github.kylosonic.proxytunnel.core.ProxyProfile
@@ -12,6 +13,7 @@ import io.github.kylosonic.proxytunnel.core.ProxyProtocol
 import io.github.kylosonic.proxytunnel.core.ProxyProbe
 import io.github.kylosonic.proxytunnel.core.RegionCatalog
 import io.github.kylosonic.proxytunnel.data.ProfileStore
+import io.github.kylosonic.proxytunnel.data.SecretStore
 import io.github.kylosonic.proxytunnel.vpn.ProxyTunnelService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +32,7 @@ import kotlinx.coroutines.withContext
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val store = ProfileStore(application)
+    private val secrets = SecretStore(application)
 
     data class ProbeState(
         val runningProfileId: String? = null,
@@ -43,7 +46,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val missingPasswords: Set<String> = emptySet(),
         val probe: ProbeState = ProbeState(),
         val message: String? = null,
-        val locationFilter: String = ""
+        val locationFilter: String = "",
+        /** Whether a provider API key is stored. The key itself never enters this state. */
+        val providerHasKey: Boolean = false,
+        val provider: ProviderUi = ProviderUi()
     ) {
         val selected: ProxyProfile? get() = profiles.firstOrNull { it.id == selectedId }
 
@@ -65,6 +71,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The state of one provider lookup, kept separate so a failure cannot clear the list. */
+    data class ProviderUi(
+        val running: Boolean = false,
+        val regionCode: String? = null,
+        val result: ProviderApi.Result? = null,
+        val addedNames: List<String> = emptyList()
+    )
+
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
@@ -80,12 +94,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val snapshot = withContext(Dispatchers.IO) {
                 val profiles = store.all()
                 val missing = profiles.filter { store.isMissingPassword(it) }.map { it.id }.toSet()
-                Triple(profiles, store.selectedProfileId, missing)
+                val hasKey = runCatching {
+                    !secrets.get(SecretStore.providerKey(ProviderApi.Provider.WEBSHARE.id)).isNullOrBlank()
+                }.getOrDefault(false)
+                Triple(profiles, store.selectedProfileId, missing) to hasKey
             }
             _state.value = _state.value.copy(
-                profiles = snapshot.first,
-                selectedId = snapshot.second,
-                missingPasswords = snapshot.third
+                profiles = snapshot.first.first,
+                selectedId = snapshot.first.second,
+                missingPasswords = snapshot.first.third,
+                providerHasKey = snapshot.second
             )
         }
     }
@@ -271,6 +289,118 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearProbe() {
         _state.value = _state.value.copy(probe = ProbeState())
+    }
+
+    // MARK: provider lookup
+
+    /**
+     * Fetches the account's proxies from the provider, narrowed to [regionCode].
+     *
+     * Only ever called because the user asked: no polling, no background refresh. That
+     * is deliberate — providers throttle or disapprove accounts that hammer their list
+     * endpoint, and the app has no reason to.
+     */
+    fun lookup(provider: ProviderApi.Provider, regionCode: String?) {
+        if (_state.value.provider.running) return
+        _state.value = _state.value.copy(
+            provider = ProviderUi(running = true, regionCode = regionCode)
+        )
+
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                val key = runCatching { secrets.get(SecretStore.providerKey(provider.id)) }.getOrNull()
+                if (key.isNullOrBlank()) {
+                    ProviderApi.Result.Failure(
+                        ProviderApi.Result.Kind.NOT_CONFIGURED,
+                        "No ${provider.displayName} API key is stored.",
+                        "Paste one above. It is kept in the Android Keystore, like your proxy passwords."
+                    )
+                } else {
+                    ProviderApi.fetch(provider, key, regionCode)
+                }
+            }
+            _state.value = _state.value.copy(
+                provider = ProviderUi(running = false, regionCode = regionCode, result = outcome)
+            )
+        }
+    }
+
+    fun saveProviderKey(provider: ProviderApi.Provider, key: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (key.isBlank()) {
+                        secrets.remove(SecretStore.providerKey(provider.id))
+                    } else {
+                        secrets.put(SecretStore.providerKey(provider.id), key.trim())
+                    }
+                }
+            }
+            refresh()
+            _state.value = _state.value.copy(
+                message = if (key.isBlank()) {
+                    "Removed the ${provider.displayName} API key."
+                } else {
+                    "Saved the ${provider.displayName} API key to the Keystore."
+                }
+            )
+        }
+    }
+
+    fun clearProviderResult() {
+        _state.value = _state.value.copy(provider = ProviderUi())
+    }
+
+    /**
+     * Stores every fetched proxy, skipping any whose host and port are already saved,
+     * and selects the first new one so Connect does the obvious thing.
+     *
+     * The passwords come from the provider's response and go straight into the
+     * Keystore; they are never placed in UI state and never logged.
+     */
+    fun addFetched(proxies: List<ProviderApi.RemoteProxy>, onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                val existing = store.all().map { "${it.host}:${it.port}" }.toSet()
+                var added = 0
+                var skipped = 0
+                var failed = 0
+                var firstId: String? = null
+
+                for (proxy in proxies) {
+                    if ("${proxy.host}:${proxy.port}" in existing) {
+                        skipped++
+                        continue
+                    }
+                    val provider = ProviderApi.Provider.fromId(proxy.providerId)
+                    runCatching {
+                        val profile = store.add(
+                            name = proxy.suggestedName(),
+                            host = proxy.host,
+                            port = proxy.port,
+                            protocol = provider?.protocol ?: ProxyProtocol.HTTP_CONNECT,
+                            username = proxy.username,
+                            password = proxy.password,
+                            regionCode = proxy.regionCode
+                        )
+                        if (firstId == null) firstId = profile.id
+                        added++
+                    }.onFailure { failed++ }
+                }
+
+                if (firstId != null) store.select(firstId)
+                Triple(added, skipped, failed)
+            }
+
+            refresh()
+            val summary = buildString {
+                append("Added ${outcome.first} ${if (outcome.first == 1) "proxy" else "proxies"}.")
+                if (outcome.second > 0) append(" Skipped ${outcome.second} already stored.")
+                if (outcome.third > 0) append(" ${outcome.third} could not be saved.")
+            }
+            _state.value = _state.value.copy(message = summary)
+            onDone(summary)
+        }
     }
 
     /** A one-line, credential-free description of the last failure, for the log. */

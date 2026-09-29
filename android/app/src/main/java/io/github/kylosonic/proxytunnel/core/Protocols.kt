@@ -26,6 +26,17 @@ object Socks5 {
     const val ATYP_DOMAIN: Byte = 0x03
     const val ATYP_IPV6: Byte = 0x04
 
+    // Reply codes, RFC 1928 §6. The bridge is a SOCKS5 *server*, so it has to speak
+    // these as well as parse them.
+    const val REP_SUCCEEDED: Byte = 0x00
+    const val REP_GENERAL_FAILURE: Byte = 0x01
+    const val REP_NOT_ALLOWED: Byte = 0x02
+    const val REP_NETWORK_UNREACHABLE: Byte = 0x03
+    const val REP_HOST_UNREACHABLE: Byte = 0x04
+    const val REP_CONNECTION_REFUSED: Byte = 0x05
+    const val REP_COMMAND_NOT_SUPPORTED: Byte = 0x07
+    const val REP_ADDRESS_TYPE_NOT_SUPPORTED: Byte = 0x08
+
     class Socks5Exception(message: String) : Exception(message)
     class IncompleteException(val needed: Int) : Exception("incomplete (need $needed more bytes)")
 

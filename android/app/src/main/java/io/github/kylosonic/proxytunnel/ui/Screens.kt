@@ -110,6 +110,8 @@ fun AppRoot(shareIntent: Intent? = null) {
     var pasting by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf<ProxyProfile?>(null) }
     var pickingLocation by remember { mutableStateOf(false) }
+    var findingByLocation by remember { mutableStateOf(false) }
+    var providerSeed by remember { mutableStateOf<String?>(null) }
     var pendingShareText by remember { mutableStateOf<String?>(null) }
 
     // A socks5:// link handed over by another app opens the paste sheet with it
@@ -223,6 +225,13 @@ fun AppRoot(shareIntent: Intent? = null) {
         LocationPickerSheet(
             state = state,
             onDismiss = { pickingLocation = false },
+            onLookupFromProvider = { query ->
+                // The escape hatch when your own list has nothing for that country:
+                // ask the provider you already have an account with.
+                providerSeed = query
+                pickingLocation = false
+                findingByLocation = true
+            },
             onChoose = { region ->
                 // `null` is the explicit "any location" choice: clear the filter and
                 // keep whatever proxy is already selected.
@@ -245,6 +254,19 @@ fun AppRoot(shareIntent: Intent? = null) {
                     }
                 }
                 pickingLocation = false
+            }
+        )
+    }
+
+    if (findingByLocation) {
+        ProviderSheet(
+            viewModel = viewModel,
+            state = state,
+            initialRegion = providerSeed,
+            onDismiss = {
+                findingByLocation = false
+                providerSeed = null
+                viewModel.clearProviderResult()
             }
         )
     }
@@ -289,9 +311,9 @@ private fun ConnectScreen(
         tunnel.state == ProxyTunnelService.State.STARTING
     val blockedReason = when {
         selected == null -> "No proxy is selected. Add one on the Proxies tab."
-        !selected.protocol.supportsTunnelUpstream ->
-            "${selected.protocol.displayName} cannot be the tunnel upstream — the engine speaks SOCKS5. " +
-                "Use it for the connection test or export instead."
+        !selected.protocol.supportsBridgeUpstream ->
+            "${selected.protocol.displayName} means TLS to the proxy, which this app does not implement. " +
+                "Use SOCKS5 or HTTP CONNECT, or keep this profile for the connection test."
         selected.id in state.missingPasswords ->
             "The stored password for this proxy is gone (it is dropped if you reinstall or clear app data). " +
                 "Open the proxy and type it again."
@@ -374,6 +396,37 @@ private fun ConnectScreen(
             }
 
             ProbeCard(state = state, onClear = onClearProbe)
+
+            if (tunnel.state == ProxyTunnelService.State.RUNNING && tunnel.bridged) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "Carried through a local SOCKS5 bridge",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            "Your proxy speaks HTTP CONNECT, so the app runs a SOCKS5 server on loopback " +
+                                "and points the engine at that. TCP and DNS work. QUIC, HTTP/3 and other " +
+                                "UDP cannot cross a CONNECT tunnel and are dropped.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (tunnel.droppedDatagrams > 0) {
+                            Text(
+                                "${tunnel.droppedDatagrams} UDP ${if (tunnel.droppedDatagrams == 1L) "datagram" else "datagrams"} dropped so far",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StatusColors.warn
+                            )
+                        }
+                        if (tunnel.dnsQueries > 0) {
+                            Text(
+                                "${tunnel.dnsQueries} DNS ${if (tunnel.dnsQueries == 1L) "lookup" else "lookups"} relayed over TCP",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
 
             if (running) {
                 Text(
@@ -861,19 +914,27 @@ private fun AboutScreen(onOpenProxies: () -> Unit) {
 
             Card {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Where to get a proxy", style = MaterialTheme.typography.titleMedium)
+                    Text("Find a proxy by location", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "This app never fetches a proxy list, and it will not search for “free residential " +
-                            "proxies”. Those lists are made of open proxies on strangers' machines, " +
-                            "honeypots that read and rewrite what you send, or SDKs that resell other " +
-                            "people's bandwidth — none of which is safe to put credentials through.",
+                        "Type a country and the app can ask a proxy provider you already have an " +
+                            "account with — with an API key you generate — which of your proxies are " +
+                            "there. It adds them, labels their country, and you connect with one tap.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        "Legitimate options: the provider you already pay for, a paid or trial plan from " +
-                            "a residential-proxy vendor, a free tier from a datacentre-proxy vendor, or a " +
-                            "SOCKS5 endpoint you run yourself (Tor's SOCKS port, an SSH -D tunnel, a small " +
-                            "VPS). Any of those can be pasted in and labelled with its country.",
+                        "It will not search the open internet for free proxies, and that is a decision, " +
+                            "not a missing feature. Lists advertised that way are open proxies scraped off " +
+                            "machines nobody offered you, and a real share are honeypots published so the " +
+                            "traffic through them can be read and rewritten. Automating a connection to " +
+                            "those would mean this app choosing, for you, which stranger's server your " +
+                            "passwords go through.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "There is also no free residential proxy pool to find. Residential bandwidth " +
+                            "costs money because a real person is paying for it, so free tiers are " +
+                            "datacentre IPs. That is the honest tradeoff, and the app will tell you when " +
+                            "your account has nothing in the country you asked for rather than guessing.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     AssistChip(onClick = onOpenProxies, label = { Text("Open my proxies") })
@@ -884,12 +945,16 @@ private fun AboutScreen(onOpenProxies: () -> Unit) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Honest limits", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "• The tunnel upstream must be SOCKS5. HTTP CONNECT and HTTPS CONNECT work for " +
-                            "the connection test and for export, but the engine cannot use them.\n" +
-                            "• The generated engine config is the one place the password touches disk. It " +
-                            "lives in app-private storage, owner-only, and is deleted when the tunnel stops.\n" +
-                            "• Proxies are only ever labelled by country because you labelled them. The app " +
-                            "does not verify where a proxy actually exits.",
+                        "• HTTPS CONNECT proxies (TLS to the proxy itself) cannot carry the tunnel. " +
+                            "SOCKS5 goes straight to the engine; HTTP CONNECT is carried by a local " +
+                            "SOCKS5 bridge.\n" +
+                            "• Through the bridge, TCP and DNS work. QUIC, HTTP/3 and other UDP cannot " +
+                            "cross a CONNECT tunnel, and the dropped count is shown rather than hidden.\n" +
+                            "• The generated engine config is the one place a credential can touch disk. " +
+                            "With SOCKS5 it holds your password; with the bridge it holds only " +
+                            "127.0.0.1, because the upstream credentials stay in memory.\n" +
+                            "• Proxies are labelled by country because you or your provider said so. The " +
+                            "app does not verify where a proxy actually exits.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }

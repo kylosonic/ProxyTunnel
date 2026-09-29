@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.IosShare
@@ -706,17 +707,20 @@ private fun ExportBlock(title: String, body: String) {
 /**
  * Pick a location from the countries your stored proxies claim.
  *
- * This is the honest version of "type a location and connect": the app searches
- * the list you built, never the internet. If nothing matches it says so and offers
- * to add one, instead of pretending to have found a free proxy somewhere.
+ * This is the honest version of "type a location and connect": the app searches the
+ * list you built, never the internet. When nothing matches it says so — and offers the
+ * one thing that is legitimate, which is asking a provider you already have an account
+ * with whether they have a proxy there.
  *
  * @param onChoose the chosen region, or `null` for "any location".
+ * @param onLookupFromProvider opens the provider lookup, pre-filled with the query.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocationPickerSheet(
     state: AppViewModel.UiState,
     onDismiss: () -> Unit,
+    onLookupFromProvider: (String) -> Unit,
     onChoose: (RegionCatalog.Region?) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -788,13 +792,33 @@ fun LocationPickerSheet(
                             style = MaterialTheme.typography.titleSmall
                         )
                         Spacer(Modifier.height(4.dp))
+                        // A plain empty state, as asked for: no pricing, no upsell. If a
+                        // provider account exists, the one legitimate next step is offered;
+                        // otherwise the app says nothing is available and stops.
                         Text(
-                            "This app does not discover proxies, and it will not search for free ones. " +
-                                "Those lists are open proxies on strangers' machines, or honeypots that " +
-                                "read what you send — not something to put credentials through. Use a " +
-                                "provider you pay for, a trial, or a SOCKS5 endpoint you run yourself " +
-                                "(Tor's SOCKS port, ssh -D, a small VPS), then label its country here.",
+                            if (state.providerHasKey) {
+                                "The app will not search the open internet for free proxies. It can ask " +
+                                    "the provider you have an account with whether they have one there."
+                            } else {
+                                "The app will not search the open internet for free proxies, and no " +
+                                    "provider account is set up to ask. Nothing is available for this " +
+                                    "location."
+                            },
                             style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                if (query.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = { onLookupFromProvider(query) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (state.providerHasKey) "Look up “$query” on your provider account"
+                            else "Set up a provider account to look this up"
                         )
                     }
                 }
