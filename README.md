@@ -21,11 +21,23 @@ this project does not try to work around it.
 nothing else — no account, no provisioning profile, no seven-day expiry, and it
 builds on a free Linux CI runner:
 
+### ▶ [Download the Android APK](../../releases/latest)
+
+```bash
+adb install -r ProxyTunnel-Android-debug.apk
+```
+
+Requires Android 10 (API 29) or newer. The release carries the APK, its SHA-256,
+and the manifest/signature/test evidence CI produced for that exact build. It is
+flagged **pre-release** because the tunnel has not been exercised on a physical
+device — see [android/README.md](android/README.md#what-is-verified-and-what-is-not).
+
+To build it yourself instead:
+
 ```bash
 cd android
 ./scripts/fetch-native-libs.sh
 gradle :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 The debug APK is signed with the Android SDK's throwaway debug key, which is a
